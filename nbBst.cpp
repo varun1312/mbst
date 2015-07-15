@@ -18,6 +18,13 @@
 
 const int LEFT = 0, RIGHT = 1;
 const int NORMAL = 0, MARKED = 1, PROMOTE = 2, UNQNULL = 3;
+enum markStatus_t {
+	REMOVE_0C,
+	REMOVE_1C,
+	REMOVE_2C,
+	ABORT_REMOVE
+};
+
 
 struct Node {
 	int *dataPtr;
@@ -86,6 +93,77 @@ void helpSwapData(Node *pred, Node *ancNode, int* dataPtr) {
 	// CAS failed means dataPtr already swapped. Therefore return;
 	CAS(&ancNode->dataPtr, dataPtr, MARKED, pred->dataPtr, MARKED);
 	return;
+}
+
+bool markSuccessor(Node *node) {
+	Node *rp = node->child[RIGHT];
+	while(STATUS(rp) == UNQNULL) {
+		if (CAS(&node->child[RIGHT], rp, UNQNULL, rp, PROMOTE))
+			return true;
+		else {
+			// Failure means some other thread inserted or status changed.
+			rp = node->child[RIGHT];
+			if (STATUS(rp) == NORMAL) {
+			//	return SEEK_SUCC_FROM_NODE;
+				return false;
+			}
+			else if (STATUS(rp) == MARKED) {
+				// Node getting deleted.
+				// Help remove this node and then mark successor.
+			}
+			else if (STATUS(rp) == UNQNULL) {
+				return true;
+			}
+		}
+	}
+}
+
+markStatus_t markNode(Node *node, Node *ancNode, int *dataPtr, int data) {
+	Node *rp = node->child[RIGHT];
+	while(STATUS(rp) != NORMAL) {
+		if ((GETADDR(rp) == root) && (STATUS(rp) == UNQNULL) && (STATUS(dataPtr) == MARKED)) {
+			// Do the helping.
+			// Find successor.
+			seekNode* succSeek = seek(node, INT_MAX);
+			// Mark Successor	
+			// help swap data.
+			// remove successor
+			// then return false;
+		}
+		else {
+			if (STATUS(rp) == MARKED) {
+				markLeft(node);
+			}
+			else if (STATUS(rp) == PROMOTE) {
+				helpSwapData(node, ancNode, dataPtr, data);
+				return remove(ancNode, data);
+			}
+			else if (STATUS(rp) == UNQNULL) {
+				if (CAS(&node->child[RIGHT], rp, UNQNULL, NULL, MARKED))
+					markLeft(node);
+			}
+		}
+		rp = node->child[RIGHT];
+	}
+}
+
+bool remove(Node *node, int data) {
+	seekNode *remSeek = seek(node, data);
+	Node *ancNode = remSeek->ancNode;
+	Node *pred = remSeek->pred;
+	Node *curr = remSeek->curr;
+	int *dataPtr = (int *)((uintptr_t)(ancNode->dataPtr) & ~0x03) ;
+	int ancNodeDataPrev = remSeek->ancNodeData;
+	int ancNodeDataCurr = GETDATA(ancNode);
+	if (ancNodeDataPrev != ancNodeDataCurr)
+		return remove(ancNode, data);
+	// Now Marking Starts
+	if (ISNULL(curr))
+		return false;
+	if (data == GETDATA(curr)) {
+		markStatus_t stat = markNode(GETADDR(curr), ancNode, dataPtr, data);
+		return true;
+	}
 }
 
 bool insert_data(Node *pred, Node *curr, int status, int data) {
