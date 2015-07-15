@@ -80,6 +80,14 @@ seekNode* seek(Node *startNode, int data) {
 	}
 } 
 
+void helpSwapData(Node *pred, Node *ancNode, int* dataPtr) {
+//	if (CAS(&ancNode->dataPtr, dataPtr, MARKED, pred->dataPtr, MARKED))
+//		return;
+	// CAS failed means dataPtr already swapped. Therefore return;
+	CAS(&ancNode->dataPtr, dataPtr, MARKED, pred->dataPtr, MARKED);
+	return;
+}
+
 bool insert_data(Node *pred, Node *curr, int status, int data) {
 	int predData = GETDATA(pred);
 	Node *myNode = new Node(data, GETADDR(pred));
@@ -109,6 +117,7 @@ bool insert(Node *node, int data) {
 	Node *ancNode = insSeek->ancNode;
 	Node *pred = insSeek->pred;
 	Node *curr = insSeek->curr;
+	int *dataPtr = (int *)((uintptr_t)(ancNode->dataPtr) & ~0x03) ;
 	int ancNodeDataPrev = insSeek->ancNodeData;
 	int ancNodeDataCurr = GETDATA(ancNode);
 	if (ancNodeDataPrev != ancNodeDataCurr)
@@ -122,8 +131,8 @@ bool insert(Node *node, int data) {
 		}
 		else if (STATUS(curr) == PROMOTE) {
 			// Help swap data and then return insert.
-			//return false for now;
-			return false;
+			helpSwapData(pred, ancNode, dataPtr);
+			return insert(ancNode, data);
 		}
 	}
 	else {
