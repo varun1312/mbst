@@ -46,7 +46,8 @@ struct Node {
 };
 Node *root = new Node(INT_MAX);
 bool insert(Node*, int);
-
+bool remove_2C(Node*, Node*, Node*, Node *, int*, int );
+bool remove(Node *, int);
 struct seekNode {
 	Node *ancNode;
 	int ancNodeData;
@@ -93,7 +94,7 @@ void helpSwapData(Node *pred, Node *ancNode, int* dataPtr) {
 //	if (CAS(&ancNode->dataPtr, dataPtr, MARKED, pred->dataPtr, MARKED))
 //		return;
 	// CAS failed means dataPtr already swapped. Therefore return;
-	CAS(&ancNode->dataPtr, dataPtr, MARKED, pred->dataPtr, MARKED);
+	CAS(&ancNode->dataPtr, dataPtr, MARKED, pred->dataPtr, NORMAL);
 	return;
 }
 
@@ -154,18 +155,18 @@ markStatus_t markRight(Node *node, Node *ancNode, int* dataPtr) {
 		rp = node->child[RIGHT];
 	}
 }
-
 markStatus_t markNode(Node *node, Node *ancNode, int *dataPtr, int data) {
 	Node *rp = node->child[RIGHT];
 	while(STATUS(rp) != NORMAL) {
 		if ((GETADDR(rp) == root) && (STATUS(rp) == UNQNULL) && (STATUS(dataPtr) == MARKED)) {
 			// Do the helping.
 			// Find successor.
-			seekNode* succSeek = seek(node, INT_MAX);
 			// Mark Successor	
 			// help swap data.
 			// remove successor
 			// then return false;
+			remove_2C(node->bl, node, ancNode, node, dataPtr, data);
+			return ABORT_REMOVE;
 		}
 		else if (STATUS(rp) == MARKED) {
 			markLeft(node);
@@ -203,17 +204,105 @@ markStatus_t markNode(Node *node, Node *ancNode, int *dataPtr, int data) {
 	}
 	rp = node->child[RIGHT];
 	lp = node->child[LEFT];
-//	std::cout<<data<<" "<<STATUS(rp)<<" "<<STATUS(lp)<<" "<<STATUS(node->dataPtr)<<std::endl;
+	std::cout<<data<<" "<<STATUS(rp)<<" "<<STATUS(lp)<<" "<<STATUS(node->dataPtr)<<std::endl;
 	if (((STATUS(rp) == MARKED) || (STATUS(rp) == PROMOTE)) && (STATUS(lp) == MARKED)) {
 		if ((GETADDR(rp) == NULL) && (GETADDR(lp) == NULL))
 			return REMOVE_0C;
 		return REMOVE_1C;
 	}
 	if (CAS(&(node->dataPtr), dataPtr, NORMAL, dataPtr, MARKED)) {
+	std::cout<<data<<" "<<STATUS(rp)<<" "<<STATUS(lp)<<" "<<STATUS(node->dataPtr)<<std::endl;
 		return REMOVE_2C;
 	}
-//	std::cout<<data<<" "<<STATUS(rp)<<" "<<STATUS(lp)<<" "<<STATUS(node->dataPtr)<<std::endl;
+	//std::cout<<data<<" "<<STATUS(rp)<<" "<<STATUS(lp)<<" "<<STATUS(node->dataPtr)<<std::endl;
 	return ABORT_REMOVE;	
+}
+
+bool remove_node(Node *pred, Node *curr) {
+	if (ISNULL(pred))
+		return true;
+	int predData = GETDATA(pred);
+	int data = GETDATA(curr);
+	Node *target;
+	if ((GETADDR(curr->child[RIGHT]) == NULL) && (GETADDR(curr->child[LEFT]) == NULL)) {
+		int *dP = pred->dataPtr;
+		if (STATUS(dP) == MARKED) 
+			target = root;
+		else
+			target = curr;
+	}
+	else if (GETADDR(curr->child[RIGHT]) == NULL)
+		target = curr->child[LEFT];
+	else if (GETADDR(curr->child[LEFT]) == NULL)
+		target = curr->child[RIGHT];
+	if (data > predData) {
+		if (target == root) {
+			if (CAS(&pred->child[RIGHT], curr, NORMAL, root, UNQNULL))
+				return true;			
+			else {
+				// Failure means that pred is marked. therefore, backtrack and remove pred.
+				remove_node(pred->bl, pred);
+				return remove_node(pred, curr);
+			}
+		}
+		else {
+			if (CAS(&pred->child[RIGHT], curr, NORMAL, curr, UNQNULL))
+				return true;			
+			else {
+				// Failure means that pred is marked. therefore, backtrack and remove pred.
+				remove_node(pred->bl, pred);
+				return remove_node(pred, curr);
+			}
+		}
+	}
+	else {
+		if (CAS(&pred->child[LEFT], curr, NORMAL, curr, UNQNULL))
+			return true;			
+		else {
+			// Failure means that pred is marked. therefore, backtrack and remove pred.
+			remove_node(pred->bl, pred);
+			return remove_node(pred->bl, curr);
+		}
+	}
+		
+}
+
+bool remove_2C(Node *predNode, Node *currNode, Node *ancNode, Node *startNode, int *dataPtr, int data) {
+	Node *rp = currNode->child[RIGHT];
+	if (ISNULL(rp))
+		return remove_node(predNode, currNode);
+	else if ((STATUS(GETADDR(rp)->child[RIGHT]) == MARKED) && (STATUS(GETADDR(rp)->child[LEFT]) == MARKED) ) {
+		// Remove Node rp and also remove Node 
+		remove_node(currNode, rp);
+		return remove(predNode, data);
+	}
+	seekNode *succSeek = seek(startNode, INT_MAX);
+	Node *pred = succSeek->pred;
+	Node *curr = succSeek->curr;
+	if (CAS(&pred->child[RIGHT], curr, UNQNULL, curr, PROMOTE)) {	
+		// Help Swap data and remove the node
+		helpSwapData(pred, currNode, dataPtr);
+		markNode(GETADDR(pred), currNode, dataPtr, data);
+		return remove_node(pred->bl, pred);
+	}
+	else {
+		// CAS failed. Can be because, another node is inserted
+		//(or) it is marked.
+		if (STATUS(pred->child[RIGHT]) == MARKED) {
+			remove(pred->bl, data);
+			// This is a tricky case. Here a series of removes will happen. Therefore,
+			// we exactly don't know where to restart.
+			// For now, search from currNode only
+			return remove_2C(predNode, currNode, ancNode, currNode, dataPtr, data);
+		}
+		else if (STATUS(pred->child[RIGHT] == PROMOTE)) {
+			helpSwapData(pred, ancNode, dataPtr);
+			return remove_node(pred->bl, pred);
+		}
+		else if (STATUS(pred->child[RIGHT] == NORMAL)) {
+			return remove_2C(predNode, currNode, ancNode, pred, dataPtr, data);
+		}
+	}
 }
 
 bool remove(Node *node, int data) {
@@ -222,7 +311,6 @@ bool remove(Node *node, int data) {
 	Node *pred = remSeek->pred;
 	Node *curr = remSeek->curr;
 	int *ancNodeDataPtr = (int *)((uintptr_t)(ancNode->dataPtr) & ~0x03) ;
-	int *dataPtr =  GETADDR(curr)->dataPtr;
 	int ancNodeDataPrev = remSeek->ancNodeData;
 	int ancNodeDataCurr = GETDATA(ancNode);
 	if (ancNodeDataPrev != ancNodeDataCurr)
@@ -230,8 +318,22 @@ bool remove(Node *node, int data) {
 	// Now Marking Starts
 	if (ISNULL(curr))
 		return false;
+	int *dataPtr =  GETADDR(curr)->dataPtr;
 	if (data == GETDATA(curr)) {
 		markStatus_t stat = markNode(GETADDR(curr), ancNode, dataPtr, data);
+		if (stat == ABORT_REMOVE)
+			return false;
+		else if (stat == REMOVE_ANCNODE) {
+			// Remove the current node and then call remove on ancNode
+			remove_node(pred, curr);	
+			return remove(root, data);
+		}
+		else if ((stat == REMOVE_0C) || (stat == REMOVE_1C)) {
+			return remove_node(pred, curr);
+		}
+		else if (stat == REMOVE_2C) {
+			return remove_2C(pred, curr, ancNode, curr, dataPtr, data);	
+		}
 		return true;
 	}
 }
@@ -299,7 +401,7 @@ void print(Node *node) {
 	if (ISNULL(node))
 		return;
 	print(GETADDR(node)->child[LEFT]);
-	if (!ISMARKED(node))
+//	if (!ISMARKED(node))
 		std::cout<<GETDATA(node)<<std::endl;
 	print(GETADDR(node)->child[RIGHT]);
 }
@@ -312,7 +414,7 @@ void testbenchSequential() {
 }
 
 void testbenchParallel() {
-	const int numThreads = 100;
+	const int numThreads = 10;
 	srand(time(NULL));
 	std::vector<std::thread> addT(numThreads);
 	int arr[numThreads];
