@@ -22,7 +22,9 @@ enum markStatus_t {
 	REMOVE_0C,
 	REMOVE_1C,
 	REMOVE_2C,
-	ABORT_REMOVE
+	ABORT_REMOVE,
+	REMOVE_ANCNODE,
+	RIGHT_MARKED
 };
 
 
@@ -118,6 +120,41 @@ bool markSuccessor(Node *node) {
 	}
 }
 
+void markLeft(Node *node) {
+	Node *lp = node->child[LEFT];
+	while(STATUS(lp) != MARKED) {
+		if (STATUS(lp) == NORMAL) {
+			if (CAS(&node->child[LEFT], lp, NORMAL, lp, MARKED)) 
+				return;
+		}	
+		else if (STATUS(lp) == UNQNULL) {
+			if (CAS(&node->child[LEFT], lp, UNQNULL, NULL, MARKED)) 
+				return;					
+		}
+		lp = node->child[LEFT];
+	}
+	return;
+}
+
+markStatus_t markRight(Node *node, Node *ancNode, int* dataPtr) {
+	Node *rp = node->child[RIGHT];
+	while(STATUS(rp) != MARKED) {
+		if (STATUS(rp) == NORMAL) {
+			if (CAS(&node->child[RIGHT], rp, NORMAL, rp, MARKED))
+				return RIGHT_MARKED;
+		}
+		else if (STATUS(rp) == PROMOTE) {
+			helpSwapData(node, ancNode, dataPtr);
+			return REMOVE_ANCNODE;
+		}
+		else if (STATUS(rp) == UNQNULL) {
+			if (CAS(&node->child[RIGHT], rp , UNQNULL, NULL, MARKED))
+				return RIGHT_MARKED;
+		}
+		rp = node->child[RIGHT];
+	}
+}
+
 markStatus_t markNode(Node *node, Node *ancNode, int *dataPtr, int data) {
 	Node *rp = node->child[RIGHT];
 	while(STATUS(rp) != NORMAL) {
@@ -130,21 +167,53 @@ markStatus_t markNode(Node *node, Node *ancNode, int *dataPtr, int data) {
 			// remove successor
 			// then return false;
 		}
-		else {
-			if (STATUS(rp) == MARKED) {
+		else if (STATUS(rp) == MARKED) {
+			markLeft(node);
+			break;
+		}
+		else if (STATUS(rp) == PROMOTE) {
+			helpSwapData(node, ancNode, dataPtr);
+			return REMOVE_ANCNODE;
+		}
+		else if (STATUS(rp) == UNQNULL) {
+			if (CAS(&node->child[RIGHT], rp, UNQNULL, NULL, MARKED)) {
 				markLeft(node);
-			}
-			else if (STATUS(rp) == PROMOTE) {
-				helpSwapData(node, ancNode, dataPtr, data);
-				return remove(ancNode, data);
-			}
-			else if (STATUS(rp) == UNQNULL) {
-				if (CAS(&node->child[RIGHT], rp, UNQNULL, NULL, MARKED))
-					markLeft(node);
+				break;
 			}
 		}
 		rp = node->child[RIGHT];
 	}
+	Node *lp = node->child[LEFT];
+	while(STATUS(lp) != NORMAL) {
+		if (STATUS(lp) == MARKED) {
+			markStatus_t rightStat = markRight(node, ancNode, dataPtr);
+			if (rightStat == REMOVE_ANCNODE)
+				return REMOVE_ANCNODE;
+			break;
+		}
+		else if (STATUS(lp) == UNQNULL) {
+			if (CAS(&node->child[LEFT], lp, UNQNULL, NULL, MARKED)) {
+				markStatus_t rightStat = markRight(node, ancNode, dataPtr);
+				if (rightStat == REMOVE_ANCNODE)
+					return REMOVE_ANCNODE;
+				break;
+			}
+		}
+		lp = node->child[LEFT];
+	}
+	rp = node->child[RIGHT];
+	lp = node->child[LEFT];
+//	std::cout<<data<<" "<<STATUS(rp)<<" "<<STATUS(lp)<<" "<<STATUS(node->dataPtr)<<std::endl;
+	if (((STATUS(rp) == MARKED) || (STATUS(rp) == PROMOTE)) && (STATUS(lp) == MARKED)) {
+		if ((GETADDR(rp) == NULL) && (GETADDR(lp) == NULL))
+			return REMOVE_0C;
+		return REMOVE_1C;
+	}
+	if (CAS(&(node->dataPtr), dataPtr, NORMAL, dataPtr, MARKED)) {
+		return REMOVE_2C;
+	}
+//	std::cout<<data<<" "<<STATUS(rp)<<" "<<STATUS(lp)<<" "<<STATUS(node->dataPtr)<<std::endl;
+	return ABORT_REMOVE;	
 }
 
 bool remove(Node *node, int data) {
@@ -152,7 +221,8 @@ bool remove(Node *node, int data) {
 	Node *ancNode = remSeek->ancNode;
 	Node *pred = remSeek->pred;
 	Node *curr = remSeek->curr;
-	int *dataPtr = (int *)((uintptr_t)(ancNode->dataPtr) & ~0x03) ;
+	int *ancNodeDataPtr = (int *)((uintptr_t)(ancNode->dataPtr) & ~0x03) ;
+	int *dataPtr =  GETADDR(curr)->dataPtr;
 	int ancNodeDataPrev = remSeek->ancNodeData;
 	int ancNodeDataCurr = GETDATA(ancNode);
 	if (ancNodeDataPrev != ancNodeDataCurr)
@@ -229,7 +299,8 @@ void print(Node *node) {
 	if (ISNULL(node))
 		return;
 	print(GETADDR(node)->child[LEFT]);
-	std::cout<<GETDATA(node)<<std::endl;
+	if (!ISMARKED(node))
+		std::cout<<GETDATA(node)<<std::endl;
 	print(GETADDR(node)->child[RIGHT]);
 }
 
@@ -244,11 +315,26 @@ void testbenchParallel() {
 	const int numThreads = 100;
 	srand(time(NULL));
 	std::vector<std::thread> addT(numThreads);
+	int arr[numThreads];
 	for (int i = 0; i < numThreads; i++) 
-		addT[i] = std::thread(insert,root, rand());
+		arr[i] = rand();
+	for (int i = 0; i < numThreads; i++) 
+		addT[i] = std::thread(insert,root, arr[i]);
 	for (int i = 0; i < numThreads; i++) 
 		addT[i].join();
 	print(root->child[LEFT]);
+	std::cout<<"Removing elements..."<<std::endl;
+	for (int i = 0; i < numThreads; i++) 
+		remove(root, arr[i]);
+	std::cout<<"Printing removed elements..."<<std::endl;
+	print(root->child[LEFT]);
+/*	int removeElement;
+	while(removeElement != -1) {
+		std::cout<<"Enter an element to remove : ";
+		std::cin>>removeElement;
+		remove(root, removeElement);
+		print(root->child[LEFT]);
+	} */
 }
 
 int main(void) {
