@@ -46,8 +46,6 @@ struct Node {
 };
 Node *root = new Node(INT_MAX);
 bool insert(Node*, int);
-bool remove_2C(Node*, Node*, Node*, Node *, int*, int );
-bool remove(Node *, int);
 struct seekNode {
 	Node *ancNode;
 	int ancNodeData;
@@ -97,7 +95,7 @@ void helpSwapData(Node *pred, Node *ancNode, int* dataPtr) {
 	CAS(&ancNode->dataPtr, dataPtr, MARKED, pred->dataPtr, NORMAL);
 	return;
 }
-
+/*
 bool markSuccessor(Node *node) {
 	Node *rp = node->child[RIGHT];
 	while(STATUS(rp) == UNQNULL) {
@@ -119,7 +117,7 @@ bool markSuccessor(Node *node) {
 			}
 		}
 	}
-}
+} */
 
 void markLeft(Node *node) {
 	Node *lp = node->child[LEFT];
@@ -165,7 +163,7 @@ markStatus_t markNode(Node *node, Node *ancNode, int *dataPtr, int data) {
 			// help swap data.
 			// remove successor
 			// then return false;
-			remove_2C(node->bl, node, ancNode, node, dataPtr, data);
+	//		remove_2C(node->bl, node, ancNode, node, dataPtr, data);
 			return ABORT_REMOVE;
 		}
 		else if (STATUS(rp) == MARKED) {
@@ -204,21 +202,21 @@ markStatus_t markNode(Node *node, Node *ancNode, int *dataPtr, int data) {
 	}
 	rp = node->child[RIGHT];
 	lp = node->child[LEFT];
-	std::cout<<data<<" "<<STATUS(rp)<<" "<<STATUS(lp)<<" "<<STATUS(node->dataPtr)<<std::endl;
+//	std::cout<<data<<" "<<STATUS(rp)<<" "<<STATUS(lp)<<" "<<STATUS(node->dataPtr)<<std::endl;
 	if (((STATUS(rp) == MARKED) || (STATUS(rp) == PROMOTE)) && (STATUS(lp) == MARKED)) {
 		if ((GETADDR(rp) == NULL) && (GETADDR(lp) == NULL))
 			return REMOVE_0C;
 		return REMOVE_1C;
 	}
 	if (CAS(&(node->dataPtr), dataPtr, NORMAL, dataPtr, MARKED)) {
-	std::cout<<data<<" "<<STATUS(rp)<<" "<<STATUS(lp)<<" "<<STATUS(node->dataPtr)<<std::endl;
+//	std::cout<<data<<" "<<STATUS(rp)<<" "<<STATUS(lp)<<" "<<STATUS(node->dataPtr)<<std::endl;
 		return REMOVE_2C;
 	}
 	//std::cout<<data<<" "<<STATUS(rp)<<" "<<STATUS(lp)<<" "<<STATUS(node->dataPtr)<<std::endl;
 	return ABORT_REMOVE;	
 }
 
-bool remove_node(Node *pred, Node *curr) {
+/*bool remove_node(Node *pred, Node *curr) {
 	if (ISNULL(pred))
 		return true;
 	int predData = GETDATA(pred);
@@ -303,9 +301,9 @@ bool remove_2C(Node *predNode, Node *currNode, Node *ancNode, Node *startNode, i
 			return remove_2C(predNode, currNode, ancNode, pred, dataPtr, data);
 		}
 	}
-}
+} */
 
-bool remove(Node *node, int data) {
+bool remove_tree(Node *node, int data) {
 	seekNode *remSeek = seek(node, data);
 	Node *ancNode = remSeek->ancNode;
 	Node *pred = remSeek->pred;
@@ -314,7 +312,7 @@ bool remove(Node *node, int data) {
 	int ancNodeDataPrev = remSeek->ancNodeData;
 	int ancNodeDataCurr = GETDATA(ancNode);
 	if (ancNodeDataPrev != ancNodeDataCurr)
-		return remove(ancNode, data);
+		return remove_tree(ancNode, data);
 	// Now Marking Starts
 	if (ISNULL(curr))
 		return false;
@@ -323,7 +321,7 @@ bool remove(Node *node, int data) {
 		markStatus_t stat = markNode(GETADDR(curr), ancNode, dataPtr, data);
 		if (stat == ABORT_REMOVE)
 			return false;
-		else if (stat == REMOVE_ANCNODE) {
+		/*else if (stat == REMOVE_ANCNODE) {
 			// Remove the current node and then call remove on ancNode
 			remove_node(pred, curr);	
 			return remove(root, data);
@@ -333,7 +331,7 @@ bool remove(Node *node, int data) {
 		}
 		else if (stat == REMOVE_2C) {
 			return remove_2C(pred, curr, ancNode, curr, dataPtr, data);	
-		}
+		} */
 		return true;
 	}
 }
@@ -363,7 +361,7 @@ bool insert_data(Node *pred, Node *curr, int status, int data) {
 }
 
 bool insert(Node *node, int data) {
-	seekNode *insSeek = seek(root, data);
+	seekNode *insSeek = seek(node, data);
 	Node *ancNode = insSeek->ancNode;
 	Node *pred = insSeek->pred;
 	Node *curr = insSeek->curr;
@@ -401,7 +399,7 @@ void print(Node *node) {
 	if (ISNULL(node))
 		return;
 	print(GETADDR(node)->child[LEFT]);
-//	if (!ISMARKED(node))
+	if (!ISMARKED(node))
 		std::cout<<GETDATA(node)<<std::endl;
 	print(GETADDR(node)->child[RIGHT]);
 }
@@ -414,20 +412,25 @@ void testbenchSequential() {
 }
 
 void testbenchParallel() {
-	const int numThreads = 10;
+	const int numThreads = 100;
 	srand(time(NULL));
 	std::vector<std::thread> addT(numThreads);
 	int arr[numThreads];
 	for (int i = 0; i < numThreads; i++) 
 		arr[i] = rand();
+
 	for (int i = 0; i < numThreads; i++) 
 		addT[i] = std::thread(insert,root, arr[i]);
 	for (int i = 0; i < numThreads; i++) 
 		addT[i].join();
+
 	print(root->child[LEFT]);
+	std::vector<std::thread> removeT(numThreads);
 	std::cout<<"Removing elements..."<<std::endl;
 	for (int i = 0; i < numThreads; i++) 
-		remove(root, arr[i]);
+		removeT[i] = std::thread(remove_tree, root, arr[i]);	
+	for (int i = 0; i < numThreads; i++) 
+		removeT[i].join();
 	std::cout<<"Printing removed elements..."<<std::endl;
 	print(root->child[LEFT]);
 /*	int removeElement;
