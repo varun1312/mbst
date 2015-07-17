@@ -315,7 +315,11 @@ bool removeTreeNodeZeroChild(Node *pred, Node *curr, int data) {
 				return true;
 			}
 			else {
-				// CAS failed means either node is removed or pred is marked.
+				// CAS failed means either node is removed or pred is marked or pred is normal
+				if (STATUS(pred->child[RIGHT]) == UNQNULL) {
+					GETADDR(pred->child[RIGHT])->bl = pred;
+					return true;
+				}
 				if (GETADDR(pred->child[RIGHT]) != curr) {
 					GETADDR(pred->child[RIGHT])->bl = pred;
 					return true;
@@ -334,6 +338,10 @@ bool removeTreeNodeZeroChild(Node *pred, Node *curr, int data) {
 			}
 			else {
 				// CAS failed means either node is removed or pred is marked.
+				if (STATUS(pred->child[RIGHT]) == UNQNULL) {
+					GETADDR(pred->child[RIGHT])->bl = pred;
+					return true;
+				}
 				if (GETADDR(pred->child[RIGHT]) != curr) {
 					GETADDR(pred->child[RIGHT])->bl = pred;
 					return true;
@@ -352,6 +360,10 @@ bool removeTreeNodeZeroChild(Node *pred, Node *curr, int data) {
 			return true;
 		}
 		else {
+			if (STATUS(pred->child[LEFT]) == UNQNULL) {
+				GETADDR(pred->child[LEFT])->bl = pred;
+				return true;
+			}
 			// CAS failed means either node is removed or pred is marked.
 			if (GETADDR(pred->child[LEFT]) != curr) {
 				GETADDR(pred->child[LEFT])->bl = pred;
@@ -414,7 +426,7 @@ bool removeTreeNodeTwoChild(Node *pred, Node *curr, int *dataPtr) {
 					else 
 						removeTreeNodeOneChild(succ->bl, succ, GETDATA(succ));
 				}
-				return removeTreeNodeTwoChild(pred, curr, dataPtr);
+				return removeTree(pred, GETDATA(curr));
 			}
 		}
 		if (STATUS(succRight) == PROMOTE) {
@@ -425,7 +437,7 @@ bool removeTreeNodeTwoChild(Node *pred, Node *curr, int *dataPtr) {
 			else 
 				return removeTreeNodeOneChild(succ->bl, succ, GETDATA(succ));
 		}
-		return removeTreeNodeTwoChild(pred, curr, dataPtr);
+		return removeTree(pred, GETDATA(curr));
 	}
 }
 
