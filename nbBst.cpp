@@ -199,6 +199,7 @@ bool removeTreeNode(Node *pred, Node *curr, int data) {
 		else {
 			// CAS can fail if some other thread deleted this node.
 			// This means that pred->child[RIGHT] is not curr.
+			return removeTree(root, data);
 			Node *predPtr = pred->child[RIGHT];
 			if (GETADDR(predPtr) != curr)
 				return false;
@@ -221,6 +222,7 @@ bool removeTreeNode(Node *pred, Node *curr, int data) {
 		else {
 			// CAS can fail if some other thread deleted this node.
 			// This means that pred->child[RIGHT] is not curr.
+			return removeTree(root, data);
 			Node *predPtr = pred->child[LEFT];
 			if (GETADDR(predPtr) != curr)
 				return false;
@@ -241,17 +243,17 @@ bool removeTreeNodeTwoChild(Node *pred, Node *curr, int *currDataPtr, int data) 
 	// CHeck if right pointer is UNQNULL and not root.
 	Node *rp = curr->child[RIGHT];
 	if ((GETADDR(rp) != root) && (STATUS(rp) == UNQNULL))
-		return removeTree(pred, data);
+		return removeTree(root, data);
 	else if (STATUS(rp) == NORMAL) {
 		Node *rpPtr = GETADDR(rp);
-		if ((GETADDR(rpPtr->child[LEFT]) == NULL) && (GETADDR(rpPtr->child[RIGHT]) == NULL) && (STATUS(rpPtr->child[LEFT]) == MARKED) && (STATUS(rpPtr->child[RIGHT]) == MARKED)) {
-			if (CAS(&curr->child[RIGHT], rpPtr, NORMAL, NULL, MARKED)) {
-				markLeft(curr);
-				return removeTreeNode(pred, curr, data);
-			}
-			else {
-				rp = curr->child[RIGHT];
-				while(STATUS(rp) != NORMAL) {
+		while(true) {
+			if ((GETADDR(rpPtr->child[LEFT]) == NULL) && (GETADDR(rpPtr->child[RIGHT]) == NULL) && (STATUS(rpPtr->child[LEFT]) == MARKED) && (STATUS(rpPtr->child[RIGHT]) == MARKED)) {
+				if (CAS(&curr->child[RIGHT], rpPtr, NORMAL, NULL, MARKED)) {
+					markLeft(curr);
+					return removeTreeNode(pred, curr, data);
+				}
+				else {
+					rp = curr->child[RIGHT];
 					if (STATUS(rp) == UNQNULL) {
 						return removeTree(pred, data);
 					}
@@ -264,9 +266,16 @@ bool removeTreeNodeTwoChild(Node *pred, Node *curr, int *currDataPtr, int data) 
 						return removeTree(root, data);
 					}
 					rp = curr->child[RIGHT];
+					rpPtr = GETADDR(rp);
 				}
-			 }
+			}
+			else
+				break;
 		}
+	}
+	else if (STATUS(rp) == MARKED) {
+		markLeft(curr);
+		return removeTreeNode(pred, curr, data);
 	}
 	// Here we need to seek and swap;
 	Node *lp = curr->child[LEFT];
@@ -289,7 +298,7 @@ bool removeTreeNodeTwoChild(Node *pred, Node *curr, int *currDataPtr, int data) 
 		lp = curr->child[LEFT];
 	}
 	// Coming here means lp is not NULL. Therefore, remove from beginning.
-	return removeTree(pred, data);
+	return removeTree(root, data);
 	return true;
 }
 
@@ -302,7 +311,7 @@ bool removeTree(Node *startNode, int data) {
 	int ancNodeDataPrev = remSeek->ancNodeData;
 	int ancNodeDataCurr = GETDATA(ancNode);
 	if (ancNodeDataPrev != ancNodeDataCurr)
-		return removeTree(ancNode, data);
+		return removeTree(root, data);
 	int *currDataPtr = GETADDR(curr)->dataPtr;
 	int currData = *(int *)((uintptr_t)currDataPtr & ~0x03);
 	if (data == currData) {
@@ -320,7 +329,7 @@ bool removeTree(Node *startNode, int data) {
 		else if (markStat == REMOVE_ANCNODE) {
 			helpSwapData(GETADDR(curr), ancNode, ancNodeDataPtr);
 			removeTreeNode(pred, GETADDR(curr), data);
-			return removeTree(pred, data);
+			return removeTree(root, data);
 		}
 		else if (markStat == HELP_REMOVE) {
 		}
@@ -397,7 +406,7 @@ void testbenchSequential() {
 }
 
 void testbenchParallel() {
-	const int numThreads = 10;
+	const int numThreads = 100;
 	count.store(0);
 	srand(time(NULL));
 	std::vector<std::thread> addT(numThreads);
