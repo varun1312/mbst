@@ -193,7 +193,8 @@ bool removeTreeNode(Node *pred, Node *curr, int data) {
 	
 	if (data > predData) {
 		if (CAS(&(pred->child[RIGHT]), curr, NORMAL, ptr, status)) {
-			CAS(&(ptr->bl), curr, NORMAL, pred, NORMAL);
+			if (ptr != root && ptr != NULL)
+				CAS(&(ptr->bl), curr, NORMAL, pred, NORMAL);
 			return true;
 		}
 		else {
@@ -211,7 +212,8 @@ bool removeTreeNode(Node *pred, Node *curr, int data) {
 	}
 	else {
 		if (CAS(&(pred->child[LEFT]), curr, NORMAL, ptr, status)) {
-			CAS(&(ptr->bl), curr, NORMAL, pred, NORMAL);
+			if (ptr != root && ptr != NULL)
+				CAS(&(ptr->bl), curr, NORMAL, pred, NORMAL);
 			return true;
 		}
 		else {
@@ -426,7 +428,7 @@ void testbenchSequential() {
 }
 
 void testbenchParallel() {
-	const int numThreads = 5;
+	const int numThreads = 100;
 	count.store(0);
 	srand(time(NULL));
 	std::vector<std::thread> addT(numThreads);
