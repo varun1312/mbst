@@ -66,16 +66,14 @@ seekNode* seekTree(Node *startNode, Node *myAncNode, int data) {
 	Node *ancNode = myAncNode;
 	int ancNodeData = GETDATA(ancNode);
 	while(true) {
+		if (ISNULL(curr) || STATUS(curr) == PROMOTE)
+			break;
 		int currData = GETDATA(curr);
 		if (data > currData) {
-			if (ISNULL(GETADDR(curr)->child[RIGHT])) 
-				break;
-			pred = (curr), curr = GETADDR(curr->child[RIGHT]);
+			pred = GETADDR(curr), curr = GETADDR(curr)->child[RIGHT];
 		}
 		else if (data < currData) {
-			if (ISNULL(GETADDR(curr)->child[LEFT]))
-				break;
-			ancNode = pred, ancNodeData = GETDATA(ancNode), pred = (curr), curr= GETADDR(curr->child[LEFT]);
+			ancNode = pred, ancNodeData = GETDATA(ancNode), pred = GETADDR(curr), curr= GETADDR(curr)->child[LEFT];
 		}
 		else if (data == currData) {
 				break;
@@ -138,7 +136,7 @@ markStatus_t markTreeNode(Node *curr, int *currDataPtr) {
 			}
 		}
 		else if ((STATUS(rp) == UNQNULL) && (GETADDR(rp) == root))
-			break;
+			return HELP_REMOVE;
 		else if (STATUS(rp) == MARKED) {
 			markLeft(curr);
 			break;
@@ -178,93 +176,78 @@ markStatus_t markTreeNode(Node *curr, int *currDataPtr) {
 }
 
 bool removeTreeNode(Node *pred, Node *curr, int data) {
-	int predData = GETDATA(pred), status = NORMAL;
 	Node *ptr, *rp, *lp;
+	int predData = GETDATA(pred), status = NORMAL;
 	rp = curr->child[RIGHT];
 	lp = curr->child[LEFT];
-	if ((ISNULL(rp)) && (ISNULL(lp))) {
-		if ((STATUS(pred->dataPtr) == MARKED) && (data > predData))
+	if (ISNULL(lp) && (ISNULL(rp) || (STATUS(rp) == PROMOTE))) {
+		if (STATUS(pred->dataPtr) == MARKED)
 			ptr = root, status = UNQNULL;
 		ptr = curr, status = UNQNULL;
 	}
-	else if (ISNULL(rp))
-		ptr = GETADDR(lp), status = NORMAL;
-	else
+	else if (ISNULL(rp) || (STATUS(rp) == PROMOTE)) {
+		ptr = GETADDR(lp), status = NORMAL;	
+	}
+	else 
 		ptr = GETADDR(rp), status = NORMAL;
-		
+	
 	if (data > predData) {
 		if (CAS(&(pred->child[RIGHT]), curr, NORMAL, ptr, status)) {
-			if (ptr != root && ptr != NULL)
-				ptr->bl = pred;
+			CAS(&(ptr->bl), curr, NORMAL, pred, NORMAL);
 			return true;
 		}
 		else {
 			Node *predPtr = pred->child[RIGHT];
-			if ((STATUS(predPtr) == MARKED) && (GETADDR(predPtr) == curr)) {
-				// This means that pred can either be deleted from tree or it is present and marked
+			if (STATUS(predPtr) == MARKED && (GETADDR(predPtr) == curr)) {
 				Node *predBl = pred->bl;
-				int predBlData = GETDATA(predBl);
-				if (predData > predBlData) {
-					if (GETADDR(predBl->child[RIGHT]) == pred) {
+				if ((GETADDR(predBl->child[LEFT]) == pred) || (GETADDR(predBl->child[RIGHT]) == pred))  {
 						markLeft(pred);
-						bool res = removeTreeNode(predBl, pred, predData);
-					}
-				}
-				else {
-					if (GETADDR(predBl->child[LEFT]) == pred) {
-						markLeft(pred);
-						bool res = removeTreeNode(predBl, pred, predData);
-					}
+						removeTreeNode(predBl, pred, predData);
 				}
 				return removeTreeNode(curr->bl, curr, data);
 			}
-			// Node is deleted from tree.
 			return false;
 		}
 	}
 	else {
 		if (CAS(&(pred->child[LEFT]), curr, NORMAL, ptr, status)) {
-			if (ptr != root && ptr != NULL)
-				ptr->bl = pred;
+			CAS(&(ptr->bl), curr, NORMAL, pred, NORMAL);
 			return true;
 		}
 		else {
 			Node *predPtr = pred->child[LEFT];
-			if ((STATUS(predPtr) == MARKED) && (GETADDR(predPtr) == curr)) {
-				// This means that pred can either be deleted from tree or it is present and marked
+			if (STATUS(predPtr) == MARKED && (GETADDR(predPtr) == curr)) {
 				Node *predBl = pred->bl;
-				int predBlData = GETDATA(predBl);
-				if (predData > predBlData) {
-					if (GETADDR(predBl->child[RIGHT]) == pred) {
-						markRight(pred);
-						bool res = removeTreeNode(predBl, pred, predData);
-					}
-				}
-				else {
-					if (GETADDR(predBl->child[LEFT]) == pred) {
-						markRight(pred);
-						bool res = removeTreeNode(predBl, pred, predData);
-					}
+				if ((GETADDR(predBl->child[LEFT]) == pred) || (GETADDR(predBl->child[RIGHT]) == pred))  {
+						markStatus_t rightStat = markRight(pred);
+						// Here we must help swap Data
+						// This is a very important fix.
+						// This is a vey big culprit which will change many things.
+						if (rightStat == REMOVE_ANCNODE) {
+							helpSwapData(pred->dataPtr, GETADDR(pred->child[RIGHT]), GETADDR(pred->child[RIGHT])->dataPtr);
+							removeTreeNode(predBl, pred, predData);
+							removeTree(root->child[LEFT], root, predData);
+						}
+						removeTreeNode(predBl, pred, predData);
 				}
 				return removeTreeNode(curr->bl, curr, data);
 			}
-			// Node is deleted from tree.
 			return false;
 		}
 	}
 	return true;
 }
 
-bool removeTreeNodeTwoChild(Node *pred, Node *curr, int *currDataPtr, Node *ancNode, int *ancNodeDataPtr, int data) {
+bool removeTreeNodeTwoChild(Node *pred, Node *curr, int *currDataPtr, int data) {
 	Node *rp = curr->child[RIGHT];
 	if (STATUS(rp) == NORMAL) {
 		Node *rPtr = GETADDR(rp);
-		if ((GETADDR(rPtr->child[RIGHT]) == NULL) && (GETADDR(rPtr->child[LEFT]) == NULL) && (STATUS(rPtr->child[RIGHT]) == MARKED) && (STATUS(rPtr->child[LEFT]) == MARKED)) {
+		if ((GETADDR(rPtr->child[LEFT]) == NULL) && (GETADDR(rPtr->child[RIGHT]) == NULL) && (STATUS(rPtr->child[LEFT]) == MARKED) && (STATUS(rPtr->child[RIGHT]) == MARKED)) {
 			if (CAS(&curr->child[RIGHT], rPtr, NORMAL, NULL, MARKED)) {
 				markLeft(curr);
 				return removeTreeNode(pred, curr, data);
 			}
-			return removeTreeNodeTwoChild(pred, curr, currDataPtr, ancNode, ancNodeDataPtr, data);
+			return removeTreeNodeTwoChild(pred, curr, currDataPtr, data);
 		}
 	}
 	else if (STATUS(rp) == MARKED) {
@@ -272,111 +255,87 @@ bool removeTreeNodeTwoChild(Node *pred, Node *curr, int *currDataPtr, Node *ancN
 		return removeTreeNode(pred, curr, data);
 	}
 	else if (STATUS(rp) == UNQNULL && GETADDR(rp) != root) {
-		return removeTree(curr->bl, ancNode, data);
+		return removeTree(root->child[LEFT], root, data);
 	}
-	DEBUG_MSG(curr)
+
 	Node *lp = curr->child[LEFT];
-	if (ISNULL(lp))
-		return removeTree(curr->bl, ancNode, data);
-	else if (STATUS(lp) == MARKED) {
-		markStatus_t markStat = markRight(curr);
-		if (markStat == REMOVE_ANCNODE) {
-			helpSwapData(currDataPtr, ancNode, ancNodeDataPtr);
-			removeTreeNode(pred, curr, data);
-			return removeTree(ancNode->bl, ancNode->bl, data);
-		}
-			return removeTreeNode(pred, curr, data);		
-	}
-	seekNode *succSeek = seekTree(GETADDR(lp), curr, data);
-	Node *sp = succSeek->pred;
-	Node *su = succSeek->curr;
-	int* sdp = su->dataPtr;
+	if (STATUS(lp) != NORMAL)
+		return removeTree(root->child[LEFT], root, data);
+	
+	seekNode* succSeek = seekTree(GETADDR(lp), curr, data);
+	Node *sc = succSeek->pred;
+	Node *sr = sc->child[RIGHT];
+	int *sdp = sc->dataPtr;
 	int sd = *(int *)((uintptr_t)sdp & ~0x03);
-	Node *sr = su->child[RIGHT];
-	if (data != GETDATA(curr))
+	if (data != GETDATA(curr)) 
 		return false;
-	if (GETADDR(sr) == root && STATUS(sr) == UNQNULL && STATUS(sdp) == MARKED) {
-		DEBUG_MSG(curr)
-		DEBUG_MSG(su)
-		removeTreeNodeTwoChild(sp, su, sdp, curr, currDataPtr, sd);
-		return removeTreeNodeTwoChild(pred, curr, currDataPtr, ancNode, ancNodeDataPtr, data);
+	if (GETADDR(sr) == root && STATUS(sdp) == MARKED) {
+		removeTreeNodeTwoChild(sc->bl, sc, sdp, sd);
+		return removeTreeNodeTwoChild(pred, curr, currDataPtr, data);
 	}
-	else if ((GETADDR(sr) != root) && (CAS(&su->child[RIGHT], sr, UNQNULL, NULL, PROMOTE))) {
-		DEBUG_MSG(curr)
-		DEBUG_MSG(su)
+	else if (CAS(&(sc->child[RIGHT]), sr, UNQNULL, curr, PROMOTE)) {
 		helpSwapData(sdp, curr, currDataPtr);
-		if (ISMARKED(su)) {
-			DEBUG_MSG(curr)
-			DEBUG_MSG(su)
-			markLeft(su);
-			removeTreeNode(sp, su, sd);
-			return removeTree(curr->bl, curr->bl, sd);
+		if (ISMARKED(sc)) {
+			removeTreeNode(sc->bl, sc, sd);
+			return removeTree(root->child[LEFT], root, sd);
 		}
-		markLeft(su);
-		return removeTreeNode(sp, su, sd);	
+			markLeft(sc);
+			return removeTreeNode(sc->bl, sc, sd);
 	}
 	else if (STATUS(sr) == PROMOTE) {
-		DEBUG_MSG(curr)
-		DEBUG_MSG(su)
 		helpSwapData(sdp, curr, currDataPtr);
-		if (ISMARKED(su)) {
-			removeTreeNode(sp, su, sd);
-			return removeTree(curr->bl, curr->bl, sd);
+		if (ISMARKED(sc)) {
+			removeTreeNode(sc->bl, sc, sd);
+			return removeTree(root->child[LEFT], root, sd);
 		}
-		return removeTreeNode(sp, su, sd);	
+			markLeft(sc);
+			return removeTreeNode(sc->bl, sc, sd);
 	}
 	else if (STATUS(sr) == MARKED) {
-		DEBUG_MSG(curr)
-		DEBUG_MSG(su)
-		markLeft(su);
-		removeTreeNode(sp, su, sd);
-		return removeTree(curr->bl, ancNode, data);
+		markLeft(sc);
+		removeTreeNode(sc->bl, sc, sd);
+		return removeTreeNodeTwoChild(pred, curr, currDataPtr, data);
 	}
-		DEBUG_MSG(curr)
-		DEBUG_MSG(su)
-	return removeTreeNodeTwoChild(pred, curr, currDataPtr, ancNode, ancNodeDataPtr, data);
- }
-
-bool removeTree(Node *startNode, Node *myAncNode, int data) {
-	myMutex.lock();
-	//	std::cout<<"Removing : "<<data<<std::endl;
-	myMutex.unlock();
-	seekNode *succSeek = seekTree(startNode, myAncNode, data);
-	Node *ancNode = succSeek->ancNode;
-	Node *pred = succSeek->pred;
-	Node *curr = succSeek->curr;
-	int *ancNodeDataPtr = ancNode->dataPtr;
-	int ancNodeDataPrev = succSeek->ancNodeData;
-	int ancNodeDataCurr = GETDATA(ancNode);
-	if (ancNodeDataPrev != ancNodeDataCurr)
-		return removeTree(root, root,  data);
-	if (ISNULL(curr))
-		return false;
-	int *currDataPtr = curr->dataPtr;
-	int currData = *(int *)((uintptr_t)currDataPtr & ~0x03);
-	if (data == currData) {
-		//std::cout<<data<<" "<<STATUS(curr->child[RIGHT])<<" "<<STATUS(curr->child[LEFT])<<" "<<std::endl;
-		markStatus_t markStat = markTreeNode(curr, currDataPtr);
-		myMutex.lock();
-//		std::cout<<data<<" : "<<markStat<<std::endl;	
-		myMutex.unlock();
-		if ((markStat == REMOVE_0C) || (markStat == REMOVE_1C))
-			return removeTreeNode(pred, curr, data);
-		else if (markStat == REMOVE_2C) 
-			return removeTreeNodeTwoChild(pred, curr, currDataPtr, ancNode, ancNodeDataPtr, data);
-		else if (markStat == REMOVE_ANCNODE) {
-			atomic_fetch_add(&count, 1);	
-			std::cout<<"REMOVE_ANCNODE : "<<data<<std::endl;
-		}
-		else if (markStat == HELP_REMOVE) {
-		}
-		else if (markStat == ABORT_REMOVE)
-			return false;
-		return true;
-	}
-	return false; 
+		return removeTreeNodeTwoChild(pred, curr, currDataPtr, data);
 }
 
+bool removeTree(Node *startNode, Node *myAncNode, int data) {
+	seekNode *remSeek = seekTree(startNode, myAncNode, data);
+	Node *ancNode = remSeek->ancNode;
+	Node *pred = remSeek->pred;
+	Node *curr = remSeek->curr;
+	int ancNodeDataPrev = remSeek->ancNodeData;
+	int ancNodeDataCurr = GETDATA(ancNode);
+	if (ancNodeDataPrev != ancNodeDataCurr)
+		return removeTree(root->child[LEFT], root, data);
+	if (ISNULL(curr))
+		return false;
+	curr = GETADDR(curr);
+	int *currDataPtr = curr->dataPtr;
+	int currData = *(int *)((uintptr_t)currDataPtr & ~0x03); 
+	if (data == currData) {
+		markStatus_t markStat = markTreeNode(curr, currDataPtr);
+		std::cout<<data <<" : "<<markStat<<std::endl;
+		if (markStat == REMOVE_0C) {
+			return removeTreeNode(pred, curr, data);
+		}
+		else if (markStat == REMOVE_1C) {
+			return removeTreeNode(pred, curr, data);
+		}
+		else if (markStat == REMOVE_2C) {
+			return removeTreeNodeTwoChild(pred, curr, currDataPtr, data);
+		}
+		else if (markStat == REMOVE_ANCNODE) {
+			helpSwapData(currDataPtr, GETADDR(curr->child[RIGHT]),GETADDR(curr->child[RIGHT])->dataPtr );
+			removeTreeNode(pred, curr, data);
+			return removeTree(root->child[LEFT], root, data);
+		}
+		else if (markStat == ABORT_REMOVE)
+			return false;	
+	}
+	else 
+		return removeTree(root->child[LEFT], root, data);
+}
 
 bool insertTree(Node *startNode, int data) {
 	seekNode *insSeek = seekTree(startNode, root, data);
@@ -387,48 +346,62 @@ bool insertTree(Node *startNode, int data) {
 	int ancNodeDataCurr = GETDATA(ancNode);
 	if (ancNodeDataPrev != ancNodeDataCurr)
 		return insertTree(ancNode, data);
-	int *currDataPtr = GETADDR(curr)->dataPtr;
-	int currData = *(int *)((uintptr_t)currDataPtr & ~0x03);
-	if (data == currData) {
-		// Check for node marking. If yes, help and then return
+	if (ISNULL(curr)) {
+		Node *myNode = new Node(data, pred);
+		int predData = GETDATA(pred);
+		if (data > predData) {
+			pred->child[RIGHT] = myNode; 
+		}
+		else if (data < predData)
+			pred->child[LEFT] = myNode; 
+	}
+	else {
+		int *currDataPtr = GETADDR(curr)->dataPtr;
+		int currData = *(int *)((uintptr_t)currDataPtr & ~0x03);
+		if (data == currData) {
+			// Check for node marking. If yes, help and then return
+			return false;
+		}
 		return false;
-	}
-	else if (data > currData) {
-		Node *currPtr = GETADDR(curr)->child[RIGHT];
-		Node *myNode = new Node(data, curr);
-		if (CAS(&GETADDR(curr)->child[RIGHT], currPtr, UNQNULL, myNode, NORMAL)) {
-			return true;
-		}
-		else {
-			// CHeck for the reason of failue.	
-			currPtr = GETADDR(curr)->child[RIGHT];
-			if (STATUS(currPtr) == NORMAL)
-				return insertTree(pred, data);
-			else if (STATUS(currPtr) == MARKED) {
-				// Mark, help remove curr and then insert in your style
-				return false;
-			}
-			else if (STATUS(currPtr) == UNQNULL)
-				return insertTree(pred, data);
-/*			else if (STATUS(currPtr) == PROMOTE) {
-				// Help Swap data and then return or insert node..
-			} */
-		}
-	}
-	else if (data < currData) {
-		Node *currPtr = GETADDR(curr)->child[LEFT];
-		Node *myNode = new Node(data, curr);
-		if (CAS(&GETADDR(curr)->child[LEFT], currPtr, UNQNULL, myNode, NORMAL)) {
-			return true;
-		}
-		else {
-			if (STATUS(currPtr) == MARKED) {
-				// Mark, help remove curr and then insert in your style
-				return false;
-			}
-			return insertTree(pred, data);
-		}
-	}
+	}	
+	
+//	
+//	else if (data > currData) {
+//		Node *currPtr = GETADDR(curr)->child[RIGHT];
+//		Node *myNode = new Node(data, curr);
+//		if (CAS(&GETADDR(curr)->child[RIGHT], currPtr, UNQNULL, myNode, NORMAL)) {
+//			return true;
+//		}
+//		else {
+//			// CHeck for the reason of failue.	
+//			currPtr = GETADDR(curr)->child[RIGHT];
+//			if (STATUS(currPtr) == NORMAL)
+//				return insertTree(pred, data);
+//			else if (STATUS(currPtr) == MARKED) {
+//				// Mark, help remove curr and then insert in your style
+//				return false;
+//			}
+//			else if (STATUS(currPtr) == UNQNULL)
+//				return insertTree(pred, data);
+///*			else if (STATUS(currPtr) == PROMOTE) {
+//				// Help Swap data and then return or insert node..
+//			} */
+//		}
+//	}
+//	else if (data < currData) {
+//		Node *currPtr = GETADDR(curr)->child[LEFT];
+//		Node *myNode = new Node(data, curr);
+//		if (CAS(&GETADDR(curr)->child[LEFT], currPtr, UNQNULL, myNode, NORMAL)) {
+//			return true;
+//		}
+//		else {
+//			if (STATUS(currPtr) == MARKED) {
+//				// Mark, help remove curr and then insert in your style
+//				return false;
+//			}
+//			return insertTree(pred, data);
+//		}
+//	}
 }
 
 void printTree(Node *node) {
@@ -453,28 +426,36 @@ void testbenchSequential() {
 }
 
 void testbenchParallel() {
-	const int numThreads = 100;
+	const int numThreads = 5;
 	count.store(0);
 	srand(time(NULL));
 	std::vector<std::thread> addT(numThreads);
 	std::vector<std::thread> removeT(numThreads);
 	int arr[numThreads];
-	for (int i = 0; i < numThreads; i++)
-		arr[i] = rand();
-	for (int i = 0; i < numThreads; i++)
-		addT[i] = std::thread(insertTree, root, arr[i]);
-	for (int i = 0; i < numThreads; i++)
-		addT[i].join();	
+	for (int i = 0; i < numThreads; i++) {
+		do {
+			arr[i] = rand();
+		} while(arr[i] == INT_MAX);
+	}
 //	for (int i = 0; i < numThreads; i++)
-//		std::cout<<arr[i]<<std::endl;
-	std::cout<<"Removing Elements..."<<std::endl;
+//		addT[i] = std::thread(insertTree, root, arr[i]);
+//	for (int i = 0; i < numThreads; i++)
+//		addT[i].join();	
+	for (int i = 0; i <numThreads; i++)
+		insertTree(root, arr[i]);
+//	printTree(root);
 	for (int i = 0; i < numThreads; i++)
-		removeT[i] = std::thread(removeTree, root, root, arr[i]);
+		std::cout<<arr[i]<<std::endl;
+	std::cout<<"Removing Elements..."<<std::endl;
+//	for (int i = 0; i < numThreads; i++)
+//		removeTree(root->child[LEFT], root, arr[i]);
+	for (int i = 0; i < numThreads; i++)
+		removeT[i] = std::thread(removeTree, root->child[LEFT], root, arr[i]);
 	for (int i = 0; i < numThreads; i++)
 		removeT[i].join();	
 	std::cout<<"Printing Removed Elements..."<<std::endl;
 	printTree(root);
-	if ((countPrint) != count.load())
+	if ((countPrint) > count.load())
 		std::cout<<"[VARUN] This is an error"<<std::endl;
 	std::cout<<count.load()<<" "<<(countPrint )<<std::endl;
 	
