@@ -273,7 +273,8 @@ bool removeTreeNodeTwoChild(Node *pred, Node *curr, int *dp, int data) {
 		Node *rPtr = GETADDR(rp);
 		if ((GETADDR(rPtr->child[RIGHT]) == NULL) && (GETADDR(rPtr->child[LEFT]) == NULL) && (STATUS(rPtr->child[RIGHT]) == MARKED) && (STATUS(rPtr->child[LEFT]) == MARKED)) {
 			if (CAS(&(curr->child[RIGHT]), rp, NORMAL, NULL, MARKED)) {
-				return removeTree(root, data);
+				markLeft(curr);
+				return removeTreeNode(pred, curr, data);
 			}
 			return removeTreeNodeTwoChild(pred, curr, dp, data);
 		}
@@ -313,8 +314,12 @@ bool removeTreeNodeTwoChild(Node *pred, Node *curr, int *dp, int data) {
 		if (leftStat == REMOVE_ANCNODE)
 			return removeTree(root, sd);
 	}
-	return removeTree(root, data);
-	return false;
+	else if (STATUS(sr) == MARKED) {
+		markLeft(sc);
+		removeTreeNode(sc->bl, sc, sd);
+		return removeTreeNodeTwoChild(pred, curr, dp, data);
+	}
+	return removeTreeNodeTwoChild(pred, curr, dp, data);
 }
 
 bool removeTree(Node *sn, int data) {
@@ -332,7 +337,7 @@ bool removeTree(Node *sn, int data) {
 	int cd = *(int *)((uintptr_t)cdp & ~0x03);
 	if (data == cd) {
 		markStatus_t stat = markTreeNode(GETADDR(curr), cdp);
-		std::cout<<data<<" : "<<stat<<std::endl;
+		//std::cout<<data<<" : "<<stat<<std::endl;
 		if ((stat == REMOVE_0C) || (stat == REMOVE_1C))
 			return removeTreeNode(pred, GETADDR(curr), data);
 		else if (stat == REMOVE_2C) 
@@ -372,6 +377,14 @@ void printTree(Node *node) {
 	if (ISNULL(node) || (STATUS(node) == PROMOTE))
 		return;
 	printTree(GETADDR(node)->child[LEFT]);
+	std::cout<<GETDATA(node)<<" "<<STATUS(GETADDR(node)->child[LEFT])<<" "<<STATUS(GETADDR(node)->child[RIGHT])<<" "<<STATUS(GETADDR(node)->dataPtr)<<std::endl;
+	printTree(GETADDR(node)->child[RIGHT]);
+}
+
+void printTreeRem(Node *node) {
+	if (ISNULL(node) || (STATUS(node) == PROMOTE))
+		return;
+	printTree(GETADDR(node)->child[LEFT]);
 	std::cout<<"[VARUN] : "<<GETDATA(node)<<" "<<STATUS(GETADDR(node)->child[LEFT])<<" "<<STATUS(GETADDR(node)->child[RIGHT])<<" "<<STATUS(GETADDR(node)->dataPtr)<<std::endl;
 	printTree(GETADDR(node)->child[RIGHT]);
 }
@@ -389,14 +402,14 @@ void testbenchParallel() {
 	for (int i = 0; i < numThreads; i++) {
 		insertTree(root, arr[i]);
 	}
-//	printTree(root->child[LEFT]);
+	printTree(root->child[LEFT]);
 	std::cout<<"Removing Elements"<<std::endl;
 	for (int i = 0; i < numThreads; i++) 
 		removeT[i] = std::thread(&removeTree, root->child[LEFT], arr[i]);
 	for (int i = 0; i < numThreads; i++)
 		removeT[i].join();
 	std::cout<<"Printing Removed Elements"<<std::endl;
-	printTree(root->child[LEFT]);
+	printTreeRem(root->child[LEFT]);
 }
 
 int main(void) {
