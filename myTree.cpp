@@ -262,16 +262,16 @@ bool rTN(Node *p, Node *c, int data) {
 			return true;
 		}
 		else {
-			Node *pP = p->ch[R];
-			if ((GETADDR(pP) == c) && (((STATUS(pP) != UNQNULL))) ) {
+			Node *pR = p->ch[R];
+			if ((GETADDR(pR) == c) && (((STATUS(pR) != UNQNULL))) ) {
 				Node *pBl = p->bl;	
 				if ((GETADDR(pBl->ch[L]) == p) || (GETADDR(pBl->ch[R]) == p)) {
 					markLeft(p);
-					if (STATUS(pP) == PROMOTE) 
-						hSD(p->dp, GETADDR(pP),GETADDR(pP)->dp);
+					if (STATUS(pR) == PROMOTE) 
+						hSD(p->dp, GETADDR(pR),GETADDR(pR)->dp);
 					rTN(pBl, p, pD);
 					if (STATUS(p->ch[R]) == PROMOTE) {
-						rT(root, pD);
+						rT(GETADDR(pR)->bl, pD);
 					}
 				}
 				return rTN(c->bl, c, data);
@@ -295,7 +295,7 @@ bool rTN(Node *p, Node *c, int data) {
 						hSD(p->dp, GETADDR(pL),GETADDR(pL)->dp);
 					rTN(pBl, p, pD);
 					if (stat == R_AN) {
-						rT(root, pD);
+						rT(GETADDR(pL)->bl, pD);
 					}
 				}
 				return rTN(c->bl, c, data);
@@ -322,18 +322,18 @@ bool rTNTC(Node *p, Node *c, int *dp, int data) {
 		return rTN(p, c ,data);
 	}
 	else if ((STATUS(rp) == UNQNULL) && (GETADDR(rp) != root)) {
-		return rT(root, data);
+		return rT(p, data);
 	}
 	else if (STATUS(rp) == PROMOTE) {
 		markLeft(c);
 		hSD(dp, GETADDR(rp),GETADDR(rp)->dp);
 		rTN(p, c, data);
-		return rT(root, data);
+		return rT(GETADDR(rp)->bl, data);
 	}
 	
 	Node *lp = c->ch[L];
 	if (STATUS(lp) != NORMAL)
-		return rT(root, data);
+		return rT(p, data);
 
 	Node *sc = c;
 	Node *sr = GETADDR(lp);
@@ -358,7 +358,7 @@ bool rTNTC(Node *p, Node *c, int *dp, int data) {
 		mS_t stat = markLeftPromote(sc);
 		rTN(sc->bl, sc, sd);
 		if (stat == R_AN) {
-			return rT(root, sd);
+			return rT(p, sd);
 		}
 		return true;
 	}
@@ -367,7 +367,7 @@ bool rTNTC(Node *p, Node *c, int *dp, int data) {
 		mS_t stat = markLeftPromote(sc);
 		rTN(sc->bl, sc, sd);
 		if (stat == R_AN) {
-			return rT(root, sd);
+			return rT(p, sd);
 		}
 		return true;
 	}
@@ -388,7 +388,7 @@ bool rT(Node *startNode, int data) {
 	int aNDP = remSeek->aND;
 	int aNDC = GETDATA(aN);
 	if (aNDP != aNDC)
-		return rT(root, data);
+		return rT(aN->bl, data);
 	int pD = GETDATA(p);
 	if (ISNULL(c) || ((STATUS(c) == PROMOTE)  && (data > pD))) {
 		return false;
