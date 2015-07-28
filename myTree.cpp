@@ -462,9 +462,8 @@ bool iT(Node *startNode, int data) {
 		return iT(aN->bl, data);
 	int pD = GETDATA(p);
 	if (ISNULL(c) || ((STATUS(c) == PROMOTE) && (data > pD))) {
-		c = GETADDR(c);
 		if (STATUS(c) == UNQNULL) {
-			return iTN(p, c, UNQNULL, data);
+			return iTN(p, GETADDR(c), UNQNULL, data);
 		}
 		else if (STATUS(c) == PROMOTE) {
 			hSD(p->dp, GETADDR(c), GETADDR(c)->dp);
@@ -495,7 +494,7 @@ bool iT(Node *startNode, int data) {
 		// Here we need to check if the node is marked or not. If it is, then remove it
 		// in insert style 
 		if (ISMARKED(c)) {
-			rT(c->bl, data);
+			rT(GETADDR(c)->bl, data);
 			return iT(p, data);
 		}
 		// returning true for now
@@ -503,7 +502,6 @@ bool iT(Node *startNode, int data) {
 	}
 	return true;
 }
-
 
 bool searchT(Node *startNode, int data) {
 	sN* serSeek = sT(startNode, data);
@@ -553,7 +551,7 @@ void printTreeRemove(Node *node) {
 }
 
 void testbenchParallel() {
-	const int n = 10;
+	const int n = 1000;
 	srand(time(NULL));
 	int arr[n];
 	std::vector<std::thread> addT(n);
@@ -564,23 +562,16 @@ void testbenchParallel() {
 			arr[i] = rand();
 		} while(arr[i] == INT_MAX);
 	}
-//	for (int i = 0; i < n ; i++)
-//		addT[i] = std::thread(&iT, root, arr[i]);
-//	for (int i = 0; i < n ; i++)
-//		addT[i].join();
-//	printTree(root->ch[L]);
-	
-	for(int i = 0; i < n; i++) {
-		iT(root, arr[i]);
-	}
+	for (int i = 0; i < n ; i++)
+		addT[i] = std::thread(&iT, root, arr[i]);
+	for (int i = 0; i < n ; i++)
+		addT[i].join();
 	printTree(root->ch[L]);
-	for(int i = 0; i < n; i++)
-		searchT(root, arr[i]);	
-//	for (int i = 0; i < n ; i++)
-//		serT[i] = std::thread(&searchT, root, arr[i]);
-//	for (int i = 0; i < n ; i++)
-//		serT[i].join();
-//	printTree(root->ch[L]);
+	
+	for (int i = 0; i < n ; i++)
+		serT[i] = std::thread(&searchT, root, arr[i]);
+	for (int i = 0; i < n ; i++)
+		serT[i].join();
 	std::cout<<"Removing elements"<<std::endl;
 	for (int i = 0; i < n ; i++)
 		remT[i] = std::thread(&rT, root, arr[i]);
