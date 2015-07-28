@@ -2,6 +2,13 @@
 #include <climits>
 #include <vector>
 #include <thread>
+#include <sys/time.h>
+#include <signal.h>
+#include <getopt.h>
+#include <stdint.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <cstdio>
 
 #define GETADDR(n) ((Node *)((uintptr_t)n & ~0x03))
 #define STATUS(n) ((uintptr_t)n & 0x03)
@@ -17,6 +24,94 @@
 
 const int NORMAL = 0, MARKED = 1, PROMOTE = 2, UNQNULL = 3;
 const int L = 0, R = 1;
+
+
+/* This code belongs to Synchrobench testbench */
+#define DEFAULT_DURATION 1000
+#define DEFAULT_DATA_SIZE 256
+#define DEFAULT_THREADS 1
+#define DEFAULT_RANGE 0x7FFFFFFF
+#define DEFAULT_SEED 0
+#define DEFAULT_INSERT 20
+#define DEFAULT_REMOVE 10
+#define DEFAULT_SEARCH 70
+
+/* This code belongs to Synchrobench testbench */
+volatile bool start = false, stop = false;
+/* This code belongs to Synchrobench testbench */
+typedef struct barrier {
+	pthread_cond_t complete;
+	pthread_mutex_t mutex;
+	int count;
+	int crossing;
+} barrier_t;
+
+
+/* This code belongs to Synchrobench testbench */
+typedef struct thread_data {
+	int id;
+	unsigned long seed;
+	unsigned long readCount;
+	unsigned long successfulReads;
+	unsigned long unSuccessfulReads;
+	unsigned long readRetries;
+	unsigned long insertCount;
+	unsigned long successfulInserts;
+	unsigned long unSuccessfulInserts;
+	unsigned long insertRetries;
+	unsigned long deleteCount;
+	unsigned long successfulDeletes;
+	unsigned long unSuccessfulDeletes;
+	unsigned long deleteRetries;
+	unsigned long seekRetries;
+
+} thread_data_t;
+
+/* This code belongs to Synchrobench testbench */
+void barrier_init(barrier_t *b, int n) {
+	pthread_cond_init(&b->complete, NULL);
+	pthread_mutex_init(&b->mutex, NULL);
+	b->count = n;
+	b->crossing = 0;
+}
+
+/* This code belongs to Synchrobench testbench */
+void barrier_cross(barrier_t *b) {
+	pthread_mutex_lock(&b->mutex);
+	b->crossing++;
+	if (b->crossing < b->count) {
+		pthread_cond_wait(&b->complete, &b->mutex);
+	}
+	else {
+		pthread_cond_wait(&b->complete, &b->mutex);
+		b->crossing = 0;
+	}
+	pthread_mutex_unlock(&b->mutex);
+}
+
+/* This code belongs to Synchrobench testbench */
+/* rand function without seed */
+inline long rand_range(long r) {
+	int m = RAND_MAX;
+	int d, v = 0;
+	do {
+		d = (m > r ? r : m);
+		v += 1 + (int)(d * ((double)rand()/((double)(m)+1.0)));
+		r -= m;
+	} while (r > 0);
+	return v;
+}
+
+inline long rand_range_re(unsigned int *seed, long r) {
+	int m = RAND_MAX;
+	int d, v = 0;
+	do {
+		d = (m > r ? r : m);
+		v += 1 + (int)(d * ((double)rand_r(seed)/((double)(m)+1.0)));
+		r -= m;
+	} while (r > 0);
+	return v;
+}
 
 enum mS_t {
 	R_0C = 3,
@@ -498,7 +593,7 @@ bool iT(Node *startNode, int data) {
 			return iT(p, data);
 		}
 		// returning true for now
-		return true;
+		return false;
 	}
 	return true;
 }
@@ -587,7 +682,185 @@ void testbenchParallel() {
 	printTreeRemove(root->ch[L]);
 }
 
-int main(void) {
-	testbenchParallel();
+void *test(void *_data) {
+	thread_data_t *data = (thread_data_t *)_data;
+	while(!start) {}	
+	std::cout<<data->id<<std::endl;
+	while(!stop) {}	
+}
+
+int main(int argc, char **argv) {
+	/* This code is for synchrobench. Here it starts */
+	struct option long_options[] = {
+		{"help", 				no_argument, 		NULL, 'h'},
+		{"duration",			required_argument,	NULL, 'D'},
+		{"Data Size",			required_argument,	NULL, 'I'},
+		{"thread-num",			required_argument,	NULL, 'T'},
+		{"range",				required_argument,	NULL, 'R'},
+		{"Seed",				required_argument,	NULL, 'S'},
+		{"Insert-Percentage",	required_argument,	NULL, 'i'},
+		{"Remove-Percentage",	required_argument,	NULL, 'r'},
+		{"Search-Percentage",	required_argument,	NULL, 's'}
+	};
+
+	thread_data_t *data;
+	pthread_t *threads;
+	pthread_attr_t attr;
+	barrier_t barrier;
+	struct timespec timeout;
+ 
+	int duration = DEFAULT_DURATION;
+	int dataSize = DEFAULT_DATA_SIZE;
+	int numThreads = DEFAULT_THREADS;
+	int range = DEFAULT_RANGE;
+	unsigned int seed = DEFAULT_SEED;
+	int insertPer = DEFAULT_INSERT;
+	int removePer = DEFAULT_REMOVE;
+	int searchPer = DEFAULT_SEARCH;
+	int initialSize = ((dataSize)/2);
+
+	while(1) {
+		int i = 0, c;
+		c = getopt_long(argc, argv, "hD:I:T:R:S:i:r:s:", long_options, &i);
+		if (c == -1)
+			break;
+		if (c ==0 && long_options[i].flag == 0)
+			c = long_options[i].val;
+
+		switch(c) {
+			case 0 :
+				break;
+			case 'h':
+				printf("Help Messge\n");
+				exit(0);
+			case 'D':
+				duration = atoi(optarg);
+				break;
+			case 'I':
+				dataSize = atoi(optarg);
+				initialSize = dataSize/2;
+				break;
+			case 'T':
+				numThreads = atoi(optarg);
+				break;
+			case 'R':
+				range = atoi(optarg);
+				break;
+			case 'S':
+				seed = atoi(optarg);
+				break;
+			case 'i':
+			 	insertPer = atoi(optarg);
+				break;
+			case 'r':
+				removePer = atoi(optarg);
+				break;
+			case 's':
+				searchPer = atoi(optarg);
+				break;
+			default:
+				std::cout<<"Use -h or --help for help"<<std::endl;
+				exit(1);
+		}
+	}
+	insertPer = searchPer + insertPer;
+	removePer = insertPer + removePer;
+	std::cout<<"Tree Type : Non-Blocking BST"<<std::endl;
+	std::cout<<"Duration : "<<duration<<std::endl;
+	std::cout<<"Data Size : "<<initialSize<<std::endl;
+	std::cout<<"Number of Threads : "<<numThreads<<std::endl;
+	std::cout<<"Range : "<<range<<std::endl;
+	std::cout<<"Seed : "<<seed<<std::endl;
+	std::cout<<"Insert percentage : "<<insertPer<<std::endl;
+	std::cout<<"Remove Percentage : "<<removePer<<std::endl;
+	std::cout<<"Search Percentage : "<<searchPer<<std::endl;
+
+	timeout.tv_sec = duration / 1000;
+	timeout.tv_nsec = ( duration % 1000) * 1000000;
+
+	data = (thread_data_t *)malloc(numThreads * sizeof(thread_data_t));
+	threads = (pthread_t *)malloc(numThreads * sizeof(pthread_t));
+
+	if (seed == 0)
+		srand((int)time(0));
+	else
+		srand(seed);
+
+	std::cout<<"Pre Populating the tree with initial size of : "<<initialSize<<std::endl;
+	int i = 0;
+	while(i < initialSize) {
+		int val = rand_range_re(&seed, range);
+		if (iT(root, val)) {
+			i++;
+		}
+	}
+	
+	for (int i = 0; i <numThreads; i++) {
+		data[i].id = i;
+		data[i].seed = seed;
+		data[i].readCount = 0;
+		data[i].successfulReads = 0;
+		data[i].unSuccessfulReads = 0;
+		data[i].readRetries = 0;
+		data[i].insertCount = 0;
+		data[i].successfulInserts = 0;
+		data[i].unSuccessfulInserts = 0;
+		data[i].insertRetries = 0;
+		data[i].deleteCount = 0;
+		data[i].successfulDeletes = 0;
+		data[i].unSuccessfulDeletes = 0;
+		data[i].deleteRetries = 0;
+		data[i].seekRetries = 0;
+		// Here the if condition of creating the pthread will come
+		pthread_create(&threads[i], NULL, test, (void *)(&data[i]));
+	}
+
+	std::cout<<"STARTING..."<<std::endl;
+	start = true;
+	nanosleep(&timeout, NULL);
+	stop = true;
+	std::cout<<"STOPPING..."<<std::endl;
+	for (int i = 0; i < numThreads ; i++)
+		pthread_join(threads[i], NULL);
+	std::cout<<"STOPPING..."<<std::endl;
+	
+  unsigned long totalReadCount=0;
+  unsigned long totalSuccessfulReads=0;
+  unsigned long totalUnsuccessfulReads=0;
+  unsigned long totalReadRetries=0;
+  unsigned long totalInsertCount=0;
+  unsigned long totalSuccessfulInserts=0;
+  unsigned long totalUnsuccessfulInserts=0;
+  unsigned long totalInsertRetries=0;
+  unsigned long totalDeleteCount=0;
+  unsigned long totalSuccessfulDeletes=0;
+  unsigned long totalUnsuccessfulDeletes=0;
+  unsigned long totalDeleteRetries=0;
+	unsigned long totalSeekRetries=0;
+	unsigned long totalSeekLength=0;
+ 
+  for(int i=0;i<numThreads;i++)
+  {
+    totalReadCount += data[i].readCount;
+    totalSuccessfulReads += data[i].successfulReads;
+    totalUnsuccessfulReads += data[i].unSuccessfulReads;
+    totalReadRetries += data[i].readRetries;
+
+    totalInsertCount += data[i].insertCount;
+    totalSuccessfulInserts += data[i].successfulInserts;
+    totalUnsuccessfulInserts += data[i].unSuccessfulInserts;
+    totalInsertRetries += data[i].insertRetries;
+    totalDeleteCount += data[i].deleteCount;
+    totalSuccessfulDeletes += data[i].successfulDeletes;
+    totalUnsuccessfulDeletes += data[i].unSuccessfulDeletes;
+    totalDeleteRetries += data[i].deleteRetries;
+	totalSeekRetries += data[i].seekRetries;
+  }
+	unsigned long totalOperations = totalReadCount + totalInsertCount + totalDeleteCount;
+	// Here we need to add all the results and also update the methods
+	// to contain data[i], insertCounts and retries etc.
+
+	/* This code is for synchrobench. Here it ends*/
+	//testbenchParallel();
 	return 0;
 }
