@@ -2,9 +2,7 @@
 #include <climits>
 #include <vector>
 #include <thread>
-#include <mutex>
 
-std::mutex m;
 #define GETADDR(n) ((Node *)((uintptr_t)n & ~0x03))
 #define STATUS(n) ((uintptr_t)n & 0x03)
 #define ISNULL(n) ((GETADDR(n) == NULL) || (STATUS(n) == UNQNULL))
@@ -51,6 +49,7 @@ struct Node {
 	}
 };
 bool rT(Node *, int);
+bool iT(Node *, int);
 
 Node *root = new Node(INT_MAX);
 
@@ -276,6 +275,8 @@ bool rTN(Node *p, Node *c, int data) {
 				}
 				return rTN(c->bl, c, data);
 			}
+			if (ptr != root && ptr != NULL && ptr->bl == c)
+				ptr->bl = p;
 			return false;
 		}
 	}
@@ -300,6 +301,8 @@ bool rTN(Node *p, Node *c, int data) {
 				}
 				return rTN(c->bl, c, data);
 			}
+			if (ptr != root && ptr != NULL && ptr->bl == c)
+				ptr->bl = p;
 			return false;
 		}
 	}
@@ -398,9 +401,7 @@ bool rT(Node *startNode, int data) {
 	if (data == cD) {
 		c = GETADDR(c);
 		mS_t stat = mTN(c, cDP);
-	//	m.lock();
 	//	std::cout<<data<<" : "<<stat<<std::endl;
-	//	m.unlock();
 		if (stat == R_0C) {
 			return rTN(p, c, data);
 		}
@@ -422,6 +423,34 @@ bool rT(Node *startNode, int data) {
 		return rT(root, data);
 }
 
+bool iTN(Node *p, Node *c, int stat, int data) {
+	int pD = GETDATA(p);
+	Node *mN = new Node(data, p);
+	if (data > pD) {
+		if (CAS(&(p->ch[R]), c, stat, mN, NORMAL))
+			return true;
+		else {
+			// CAS failed means pred child changed or pred 	
+			// is marked. Both the scenarions are handled by
+			// insert method. We need to restart the insert
+			// from pred
+			return iT(p, data);
+		}
+	}
+	else { 
+		if (CAS(&(p->ch[L]), c, stat, mN, NORMAL))
+			return true;
+		else {
+			// CAS failed means pred child changed or pred 	
+			// is marked. Both the scenarions are handled by
+			// insert method. We need to restart the insert
+			// from pred
+			return iT(p, data);
+		}
+	}
+}
+
+
 bool iT(Node *startNode, int data) {
 	sN* insSeek = sT(startNode, data);
 	Node *aN = insSeek->aN;
@@ -431,25 +460,87 @@ bool iT(Node *startNode, int data) {
 	int aNDC = GETDATA(aN);
 	if (aNDP != aNDC)
 		return iT(aN->bl, data);
-	if (ISNULL(c)) {
-		int pD = GETDATA(p);
-		Node *mN = new Node(data, p);
-		if (data > pD)
-       		p->ch[R] = mN;
-		else 
-			p->ch[L] = mN;
+	int pD = GETDATA(p);
+	if (ISNULL(c) || ((STATUS(c) == PROMOTE) && (data > pD))) {
+		c = GETADDR(c);
+		if (STATUS(c) == UNQNULL) {
+			return iTN(p, c, UNQNULL, data);
+		}
+		else if (STATUS(c) == PROMOTE) {
+			hSD(p->dp, GETADDR(c), GETADDR(c)->dp);
+			return iT(aN->bl, data);
+		}
+		else if (STATUS(c) == MARKED) {
+			// This means pred is getting removed.
+			// we must try remove in out style.
+			// retry for now.
+			if (data > pD) {
+				// This means that right is marked.
+				markLeft(p);
+				return iTN(p->bl, p , NORMAL, data);
+			}
+			else {
+				mS_t rs = markRight(p);
+				if (rs == R_AN) {
+					hSD(p->dp, GETADDR(c), GETADDR(c)->dp);
+					return iT(aN->bl, data);
+				}
+				else {
+					return iTN(p->bl, p , NORMAL, data);
+				}
+			}
+		}
+	}
+	else if (data == GETDATA(c)) {
+		// Here we need to check if the node is marked or not. If it is, then remove it
+		// in insert style 
+		if (ISMARKED(c)) {
+			rT(c->bl, data);
+			return iT(p, data);
+		}
+		// returning true for now
+		return true;
 	}
 	return true;
 }
 
-/*void printTree(Node *node) {
+
+bool searchT(Node *startNode, int data) {
+	sN* serSeek = sT(startNode, data);
+	Node *aN = serSeek->aN;
+	Node *p = serSeek->p;
+	Node *c = serSeek->c;
+	int aNDP = serSeek->aND;
+	int aNDC = GETDATA(aN);
+	if (aNDP != aNDC)
+		return searchT(aN->bl, data);
+	int pD = GETDATA(p);
+	if (ISNULL(c) || ((STATUS(c) == PROMOTE)  && (data > pD))) {
+		std::cout<<"ERROR : "<<__LINE__<<std::endl;
+		return false;
+	}
+	int cD = GETDATA(c); 
+	if (data == cD) {
+		if (ISMARKED(c)) {
+			std::cout<<"ERROR : "<<__LINE__<<std::endl;
+			return false;
+		}
+		return true;
+	}
+	else {
+		std::cout<<"ERROR : "<<__LINE__<<std::endl;
+		return false;
+	}
+}
+
+void printTree(Node *node) {
 	if (ISNULL(node))
 		return;
 	printTree(GETADDR(node)->ch[L]);
-	DEBUG_MSG(GETADDR(node));
-	std::cout<<" "<<GETDATA(node)<<std::endl;
+	//DEBUG_MSG(GETADDR(node));
+	std::cout<<GETDATA(node)<<std::endl;
 	printTree(GETADDR(node)->ch[R]);
-}*/
+}
 
 void printTreeRemove(Node *node) {
 	if (ISNULL(node))
@@ -462,18 +553,34 @@ void printTreeRemove(Node *node) {
 }
 
 void testbenchParallel() {
-	const int n = 1000;
+	const int n = 10;
 	srand(time(NULL));
 	int arr[n];
+	std::vector<std::thread> addT(n);
 	std::vector<std::thread> remT(n);
+	std::vector<std::thread> serT(n);
 	for (int i = 0; i < n ; i++) {
 		do {
 			arr[i] = rand();
 		} while(arr[i] == INT_MAX);
 	}
-	for (int i = 0; i < n ; i++)
+//	for (int i = 0; i < n ; i++)
+//		addT[i] = std::thread(&iT, root, arr[i]);
+//	for (int i = 0; i < n ; i++)
+//		addT[i].join();
+//	printTree(root->ch[L]);
+	
+	for(int i = 0; i < n; i++) {
 		iT(root, arr[i]);
-	fflush(stdout);
+	}
+	printTree(root->ch[L]);
+	for(int i = 0; i < n; i++)
+		searchT(root, arr[i]);	
+//	for (int i = 0; i < n ; i++)
+//		serT[i] = std::thread(&searchT, root, arr[i]);
+//	for (int i = 0; i < n ; i++)
+//		serT[i].join();
+//	printTree(root->ch[L]);
 	std::cout<<"Removing elements"<<std::endl;
 	for (int i = 0; i < n ; i++)
 		remT[i] = std::thread(&rT, root, arr[i]);
