@@ -514,19 +514,25 @@ bool searchT(Node *startNode, int data) {
 		return searchT(aN->bl, data);
 	int pD = GETDATA(p);
 	if (ISNULL(c) || ((STATUS(c) == PROMOTE)  && (data > pD))) {
-		std::cout<<"ERROR : "<<__LINE__<<std::endl;
 		return false;
 	}
 	int cD = GETDATA(c); 
 	if (data == cD) {
-		if (ISMARKED(c)) {
-			std::cout<<"ERROR : "<<__LINE__<<std::endl;
+		if (STATUS(GETADDR(c)->ch[R]) == PROMOTE) {
+			if ((STATUS(GETADDR(c)->ch[L]) == UNQNULL)) 
+				return true;
+			else if ((STATUS(GETADDR(c)->ch[L]) == MARKED) || (STATUS(GETADDR(c)->ch[L]) == PROMOTE))  {
+				if (data == GETDATA(aN) && (STATUS(aN->dp) != MARKED))
+					return true;
+				return false;
+			}
+		}
+		else if (ISMARKED(c)) {
 			return false;
 		}
 		return true;
 	}
 	else {
-		std::cout<<"ERROR : "<<__LINE__<<std::endl;
 		return false;
 	}
 }
