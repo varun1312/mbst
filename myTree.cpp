@@ -9,6 +9,10 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <cstdio>
+#include<gsl/gsl_rng.h>
+#include<gsl/gsl_randist.h>
+#include <ctime>
+#include <mutex>
 
 #define GETADDR(n) ((Node *)((uintptr_t)n & ~0x03))
 #define STATUS(n) ((uintptr_t)n & 0x03)
@@ -21,13 +25,14 @@
 #define ISMARKED(n) ((STATUS(n->ch[R]) == MARKED ) || (STATUS(n->ch[L]) == MARKED) || (STATUS(n->dp) == MARKED))
 #define DEBUG_MSG(n) std::cout<<__LINE__<<" : "<<(STATUS(n->ch[R]))<<" "<<(STATUS(n->ch[L]))<<" "<<(STATUS(n->dp))<<" "
 
-
+#define INV_MSG(data) std::cout<<"Line : "<<__LINE__<<" VARUN "<<data<<std::endl;
+std::mutex myMutex;
 const int NORMAL = 0, MARKED = 1, PROMOTE = 2, UNQNULL = 3;
 const int L = 0, R = 1;
 
 
 /* This code belongs to Synchrobench testbench */
-#define DEFAULT_DURATION 1000
+#define DEFAULT_DURATION 2
 #define DEFAULT_DATA_SIZE 256
 #define DEFAULT_THREADS 1
 #define DEFAULT_RANGE 0x7FFFFFFF
@@ -37,7 +42,7 @@ const int L = 0, R = 1;
 #define DEFAULT_SEARCH 70
 
 /* This code belongs to Synchrobench testbench */
-volatile bool start = false, stop = false;
+bool start = false, stop = false, steadyState = false;
 /* This code belongs to Synchrobench testbench */
 typedef struct barrier {
 	pthread_cond_t complete;
@@ -46,6 +51,15 @@ typedef struct barrier {
 	int crossing;
 } barrier_t;
 
+	int duration = DEFAULT_DURATION;
+	int dataSize = DEFAULT_DATA_SIZE;
+	int numThreads = DEFAULT_THREADS;
+	int range = DEFAULT_RANGE;
+	unsigned int seed = DEFAULT_SEED;
+	int insertPer = DEFAULT_INSERT;
+	int removePer = DEFAULT_REMOVE;
+	int searchPer = DEFAULT_SEARCH;
+	int initialSize = ((dataSize)/2);
 
 /* This code belongs to Synchrobench testbench */
 typedef struct thread_data {
@@ -121,7 +135,8 @@ enum mS_t {
 	R_AN = 13,
 	L_M = 17,
 	H_R = 19,
-	A_R = 23
+	A_R = 23,
+	RETRY = 29
 };
 
 struct Node {
@@ -140,7 +155,7 @@ struct Node {
 		dp = new int(data);
 		ch[L] = (Node *)(UNQNULL);
 		ch[R] = (Node *)(UNQNULL);
-		bl = this;
+		this->bl = this;
 	}
 };
 bool rT(Node *, int);
@@ -162,28 +177,29 @@ struct sN {
 	}
 };
 
-sN* sT(Node *startNode, int data) {
-	Node *c = GETADDR(startNode);
-	Node *p = c->bl;
-	Node *aN = p;
+sN* sT(Node *startNode, Node *ancNode, int data) {
+	Node *c = (startNode);
+	Node *p = GETADDR(c)->bl;
+	Node *aN = ancNode;
 	int aNd = GETDATA(aN);
 	bool lr = false;
 	while(true) {
-		if (ISNULL(c) || ((STATUS(c) == PROMOTE) && (lr == true))) {
+		if (ISNULL(c))
 			break;
-		}
 		int cD = GETDATA(c);
 		if (data > cD) {
 			p = GETADDR(c);
 			c = GETADDR(c)->ch[R];
-			lr = true;
+			if (ISNULL(c) || (STATUS(c) == PROMOTE))
+				break;
 		}
 		else if (data < cD) {
 			aN = p;
 			aNd = GETDATA(aN);	
 			p = GETADDR(c);
 			c = GETADDR(c)->ch[L];
-			lr = false;
+			if (ISNULL(c))
+				break;
 		}
 		else if (data == cD)
 			break;
@@ -192,47 +208,26 @@ sN* sT(Node *startNode, int data) {
 	return n;
 }
 
-mS_t markLeftPromote(Node *n) {
+mS_t markLeft(Node *n) {
 	Node *lp = n->ch[L];
 	while(true) {
-		if (STATUS(lp) == NORMAL) {
-			if (CAS(&(n->ch[L]), lp, NORMAL, lp, PROMOTE)) {
+		if (STATUS(lp) == MARKED) {
+			return L_M;
+		}
+		else if (STATUS(lp) == UNQNULL) {
+			if (CAS(&(n->ch[L]), lp, UNQNULL, NULL, MARKED)) {
 				return L_M;
 			}
 		}
-		else if (STATUS(lp) == MARKED) {
-			return R_AN;
-		}
-		else if (STATUS(lp) == UNQNULL) {
-			if (CAS(&(n->ch[L]), lp, UNQNULL, NULL, PROMOTE)) {
+		else if (STATUS(lp) == NORMAL) {
+			if (CAS(&(n->ch[L]), lp, NORMAL, lp, MARKED)) {
 				return L_M;
 			}
 		}
 		else if (STATUS(lp) == PROMOTE) {
-			return L_M;
+			INV_MSG(GETDATA(n))
+			exit(1);
 		}
-		lp = n->ch[L];
-	}
-}
-
-void markLeft(Node *n) {
-	Node *lp = n->ch[L];
-	while(true) {
-		if (STATUS(lp) == NORMAL) {
-			if (CAS(&(n->ch[L]), lp, NORMAL, lp, MARKED)) {
-				return;
-			}
-		}
-		else if (STATUS(lp) == MARKED) {
-			return;
-		}
-		else if (STATUS(lp) == UNQNULL) {
-			if (CAS(&(n->ch[L]), lp, UNQNULL, NULL, MARKED)) {
-				return;
-			}
-		}
-		else if (STATUS(lp) == PROMOTE)
-			return;
 		lp = n->ch[L];
 	}
 }
@@ -240,12 +235,9 @@ void markLeft(Node *n) {
 mS_t markRight(Node *n) {
 	Node *rp = n->ch[R];
 	while(true) {
-		if (STATUS(rp) == NORMAL) {
-			if (CAS(&(n->ch[R]), rp, NORMAL, rp, MARKED)) {
-				return R_M;
-			}
-		}
-		else if (STATUS(rp) == MARKED) {
+		if (STATUS(rp) == MARKED)
+			return R_M;
+		else if (STATUS(rp) == PROMOTE) {
 			return R_M;
 		}
 		else if (STATUS(rp) == UNQNULL) {
@@ -253,269 +245,356 @@ mS_t markRight(Node *n) {
 				return R_M;
 			}
 		}
-		else if (STATUS(rp) == PROMOTE) {
-			return R_AN;
+		else if (STATUS(rp) == NORMAL) {
+			if (CAS(&(n->ch[R]), rp, NORMAL, rp, MARKED)) {
+				return R_M;
+			}
 		}
 		rp = n->ch[R];
 	}
 }
 
-mS_t mTN(Node *n, int *nP) {
-	Node *rp = n->ch[R];
-	while(true) {
-		if (STATUS(rp) == NORMAL) {
-			break;
-		}
-		else if (STATUS(rp) == MARKED) {
-			markLeft(n);
-			break;
-		}
-		else if (STATUS(rp) == PROMOTE) {
-			mS_t ls = markLeftPromote(n);
-			return R_AN;
-		}
-		else if ((STATUS(rp) == UNQNULL) && (GETADDR(rp) != root)) {
-			if (CAS(&(n->ch[R]), rp, UNQNULL, NULL, MARKED)) {
-				markLeft(n);
-				break;
-			}
-		}
-		else if ((STATUS(rp) == UNQNULL) && (GETADDR(rp) == root)) {
-			return H_R;
-		}
-		rp = n->ch[R];
-	}
-
+mS_t markLeftPromote(Node *n) {
 	Node *lp = n->ch[L];
 	while(true) {
-		if (STATUS(lp) == NORMAL) {
-			break;
-		}
+		if (STATUS(lp) == PROMOTE)
+			return L_M;
 		else if (STATUS(lp) == MARKED) {
-			mS_t rs = markRight(n);
-			if (rs == R_AN)
-				return R_AN;
-			break;
+			return R_0C;
 		}
-		else if (STATUS(lp) == UNQNULL) {
-			if (CAS(&(n->ch[L]), lp, UNQNULL, NULL, MARKED)) {
-				mS_t rs = markRight(n);
-				if (rs == R_AN)
-					return R_AN;
-				break;
+		else if (STATUS(lp) == NORMAL) {
+			if (CAS(&(n->ch[L]), lp, NORMAL, lp, PROMOTE)) {
+				return L_M;
 			}
 		}
-		else if (STATUS(lp) == PROMOTE) {
-			return R_AN;
+		else if (STATUS(lp) == UNQNULL) {
+			if (CAS(&(n->ch[L]), lp, UNQNULL, NULL, PROMOTE)) {
+				return L_M;
+			}
 		}
 		lp = n->ch[L];
 	}
-	rp = n->ch[R];
-	lp = n->ch[L];
-	if (ISNULL(rp) && ISNULL(lp)) {
-		return R_0C;
-    }
-	else if (ISNULL(rp) || ISNULL(lp)) {
-		return R_1C;
-    }
-	
-	if (CAS(&(n->dp), nP, NORMAL, nP, MARKED)) {
-		return R_2C;
-	}
-	else if (STATUS(n->dp) == MARKED) {
-		return R_2C;
-	}
-	return A_R;
 }
 
-bool hSD(int *sDp, Node *aN, int *aNDP) {
-	return CAS(&(aN->dp), aNDP, MARKED, sDp, STATUS(sDp));
-}
-
-bool rTN(Node *p, Node *c, int data) {
-	int status;
-	Node *ptr;
-	Node *rp, *lp;
-	rp = c->ch[R];
-	lp = c->ch[L];
-	if (ISNULL(lp) && (ISNULL(rp) || (STATUS(rp) == PROMOTE))) {
-		if (STATUS(p->dp) == MARKED) 
-			ptr = root, status = UNQNULL;
-		ptr = c, status = UNQNULL;
-	}
-	else if (ISNULL(lp))
-		ptr = GETADDR(rp), status = NORMAL;
-	else
-		ptr = GETADDR(lp), status = NORMAL;
-
-	int pD = GETDATA(p);
-	if (data > pD) {
-		if (CAS(&(p->ch[R]), c, NORMAL, ptr, status)) {
-			if ((ptr != root) && (ptr != NULL) && (status != UNQNULL))
-				ptr->bl = p;
-			return true;
+mS_t mTN(Node *c, Node *rp, Node *lp, int *cdp, int data) {
+	if ((STATUS(rp) == NORMAL) && (STATUS(lp) == NORMAL)) {
+		if (CAS(&(c->dp), cdp, NORMAL, cdp, MARKED)) {
+			return R_2C;
 		}
 		else {
-			Node *pR = p->ch[R];
-			if ((GETADDR(pR) == c) && (((STATUS(pR) != UNQNULL))) ) {
-				Node *pBl = p->bl;	
-				if ((GETADDR(pBl->ch[L]) == p) || (GETADDR(pBl->ch[R]) == p)) {
-					markLeft(p);
-					if (STATUS(pR) == PROMOTE) 
-						hSD(p->dp, GETADDR(pR),GETADDR(pR)->dp);
-					rTN(pBl, p, pD);
-					if (STATUS(p->ch[R]) == PROMOTE) {
-						rT(GETADDR(pR)->bl, pD);
+			cdp = c->dp;
+			int cd = *(int *)((uintptr_t)cdp & ~0x03);
+			if ((STATUS(cdp) == MARKED) && (cd == data))
+				return R_2C;
+			else 
+				return A_R;
+		}
+	}
+	if (ISNULL(rp)) {
+		if (GETADDR(rp) == root) {
+			if ((STATUS(cdp) == MARKED) || (GETADDR(c->dp) == GETADDR(cdp))) {
+				if (!ISNULL(lp)) {
+					return R_2C;
+				}
+			}
+			else {
+				if (CAS(&(c->ch[R]), rp, UNQNULL, NULL, MARKED)) {
+					markLeft(c);
+					lp = c->ch[L];
+					if (GETADDR(lp) == NULL)
+						return R_0C;
+					return R_1C;
+				}
+				else
+					return RETRY;
+			}
+		}
+		else {
+			if (STATUS(rp) == MARKED) {
+				markLeft(c);
+				lp = c->ch[L];
+				if (GETADDR(lp) == NULL)
+					return R_0C;
+				return R_1C;
+			}
+			else if (STATUS(rp) == UNQNULL) {
+				if (CAS(&(c->ch[R]), rp, UNQNULL, NULL, MARKED)) {
+					markLeft(c);
+					lp = c->ch[L];
+					if (GETADDR(lp) == NULL)
+						return R_0C;
+					return R_1C;
+				}	
+				else
+					return RETRY;
+			}
+			else if (STATUS(rp) == PROMOTE) {
+				INV_MSG(data)
+				exit(1);
+			}
+		}
+	}
+	if (ISNULL(lp)) {
+		if (STATUS(lp) == MARKED) {
+			markRight(c);
+			rp = c->ch[R];
+			if ((GETADDR(rp) == NULL) || (STATUS(rp) == PROMOTE))
+				return R_0C;
+			return R_1C;
+		}
+		else if (STATUS(lp) == PROMOTE) {
+			// lp will be promote only if rp is promote.
+			if (STATUS(rp) != PROMOTE) {
+				INV_MSG(data)
+				exit(1);
+			}
+			return R_2C;
+		}
+		else if (STATUS(lp) == UNQNULL) {
+			if (CAS(&(c->ch[L]), lp, UNQNULL, NULL, MARKED)) {
+				markRight(c);
+				rp = c->ch[R];
+				if ((GETADDR(rp) == NULL) || (STATUS(rp) == PROMOTE))
+					return R_0C;
+				return R_1C;
+			}
+			else 
+				return RETRY;
+		}
+	}
+	if ((STATUS(rp) == PROMOTE) && (STATUS(lp) == PROMOTE))
+		return R_2C;
+	else {
+		INV_MSG(data)
+		exit(1);
+	}
+}
+
+
+bool rTN(Node *p, Node *c, int data) {
+	Node *rp = c->ch[R];
+	Node *lp = c->ch[L];
+	if (((STATUS(rp) == MARKED) && (STATUS(lp) == MARKED)) || ((STATUS(rp) == PROMOTE) && (STATUS(lp) == PROMOTE)) || ((STATUS(rp) == PROMOTE) && (STATUS(lp) == MARKED))) {
+		Node *ptr;
+		int status;
+		if (ISNULL(lp) && ((ISNULL(rp)) || (STATUS(rp) == PROMOTE))) {
+			if (STATUS(p->dp) == MARKED)
+				ptr = root, status = UNQNULL;
+			ptr = c, status = UNQNULL;
+		}
+		else if (ISNULL(lp))
+			ptr = GETADDR(rp), status = NORMAL;
+		else
+			ptr = GETADDR(lp), status = NORMAL;
+		
+		if (GETADDR(p->ch[R]) == c) {
+			if (CAS(&(p->ch[R]), c, NORMAL, ptr, status)) {
+				if (ptr != root && ptr != NULL)
+					ptr->bl = p;
+				return true;
+			}
+			else {
+				Node *pR = p->ch[R];
+				if (STATUS(pR) == UNQNULL) {
+					return false;
+				}
+				else if (STATUS(pR) == MARKED) {
+					rTN(p->bl, p, GETDATA(p));
+					return rTN(c->bl, c, data);
+				}
+				else if (STATUS(pR) == NORMAL) {
+					if (GETADDR(pR) != c) {
+						if (ptr != root && ptr != NULL)
+							CAS(&(ptr->bl), c, NORMAL, c->bl, NORMAL);
+						return false;
+					}
+					else {
+						INV_MSG(data);
+						exit(1);
 					}
 				}
-				return rTN(c->bl, c, data);
+				else if (STATUS(pR) == PROMOTE) {
+					INV_MSG(data)
+				}
 			}
-			if (ptr != root && ptr != NULL && ptr->bl == c)
-				ptr->bl = p;
+		}
+		else if (GETADDR(p->ch[L]) == c){
+			if (CAS(&(p->ch[L]), c, NORMAL, ptr, status)) {
+				if (ptr != root && ptr != NULL) {
+					ptr->bl = p;	
+				}
+				return true;
+			}
+			else {
+				Node *pL = p->ch[L];
+				if (STATUS(pL) == UNQNULL) {
+					return false;
+				}
+				else if (STATUS(pL) == MARKED) {
+					rTN(p->bl, p, GETDATA(p));
+					return rTN(c->bl, c, data);
+				}
+				else if (STATUS(pL) == NORMAL) {
+					if (GETADDR(pL) != c) {
+						if (ptr != root && ptr != NULL)
+							CAS(&(ptr->bl), c, NORMAL, c->bl, NORMAL);
+						return false;
+					}
+					else {
+						INV_MSG(data)
+						exit(1);
+					}
+				}
+				else if (STATUS(pL) == PROMOTE) {
+					rTN(p->bl, p, GETDATA(p));
+					return rTN(c->bl, c, data);
+				}
+			}
+		}
+		else
 			return false;
+	}
+	else {
+		INV_MSG(data)
+		exit(1);
+	}
+}
+
+bool rTNTC(Node *p, Node *c, int *cdp, int data) {
+	// Coming here means that data pointer should be marked 
+	// and left, right should be NORMAL
+	if (STATUS(cdp) == NORMAL) {
+		return rT(root, data);	
+	}
+	Node *rp = c->ch[R];
+	Node *lp = c->ch[L];
+	if (((STATUS(rp) == NORMAL) || (GETADDR(rp) == root)) && (STATUS(lp) == NORMAL)) {
+		if ((GETADDR(rp->ch[R]) == NULL) && (GETADDR(rp->ch[L]) == NULL) && (STATUS(rp->ch[R]) == MARKED) && (STATUS(rp->ch[L]) == MARKED)) {
+			if (CAS(&(c->ch[R]), rp, NORMAL, root, UNQNULL)) {
+				return rTNTC(p, c, cdp, data);
+			}
+			return rT(root, data);
+		}	
+		
+		Node *sc = c;
+		Node *sr = lp;
+		while(true) {
+			if (ISNULL(sr) || (STATUS(sr) == PROMOTE)) {
+				break;
+			}
+			sc = GETADDR(sr);
+			sr = GETADDR(sr)->ch[R];
+		}
+		int *sdp = sc->dp;
+		int sd = *(int *)((uintptr_t)sdp & ~0x03);
+		if (data != GETDATA(c))
+			return false;
+		if (STATUS(sr) == MARKED) {
+			rTN(sc->bl, sc, data);
+			return rT(root, data);
+		}
+		else if (STATUS(sr) == NORMAL) {
+			INV_MSG(data)
+			exit(1);
+		}
+		else if (STATUS(sr) == UNQNULL) {
+			if (CAS(&(sc->ch[R]), sr, UNQNULL, c, PROMOTE)) {
+				mS_t ls = markLeftPromote(sc);
+				if (ls == L_M) {
+					// Both Left and Right are marked promote
+					CAS(&(c->dp), cdp, MARKED, sdp, NORMAL);
+					return rTN(sc->bl, sc, sd);
+				}
+				else {
+					return rT(root, data);
+				}
+			}
+			else {
+				return rT(root, data);
+			}
+		}
+		else if (STATUS(sr) == PROMOTE) {
+			mS_t ls = markLeftPromote(sc);
+			if (ls == L_M) {
+				// Both Left and Right are marked promote
+				CAS(&(c->dp), cdp, MARKED, sdp, NORMAL);
+				return rTN(sc->bl, sc, sd);
+			}
+			else {
+				return rT(root, data);
+			}
+		}
+		else {
+			INV_MSG(data)
+			exit(1);
 		}
 	}
 	else {
-		if (CAS(&(p->ch[L]), c, NORMAL, ptr, status)) {
-			if ((ptr != root) && (ptr != NULL) && (status != UNQNULL))
-				ptr->bl = p;
-			return true;
-		}
-		else {
-			Node *pL = p->ch[L];
-			if ((GETADDR(pL) == c) && (((STATUS(pL) != UNQNULL))) ) {
-				Node *pBl = p->bl;
-				if ((GETADDR(pBl->ch[L]) == p) || (GETADDR(pBl->ch[R]) == p)) {
-					mS_t stat = markRight(p);
-					if (stat == R_AN)
-						hSD(p->dp, GETADDR(pL),GETADDR(pL)->dp);
-					rTN(pBl, p, pD);
-					if (stat == R_AN) {
-						rT(GETADDR(pL)->bl, pD);
-					}
-				}
-				return rTN(c->bl, c, data);
-			}
-			if (ptr != root && ptr != NULL && ptr->bl == c)
-				ptr->bl = p;
-			return false;
-		}
+		INV_MSG(data)
+		return rT(root, data);
 	}
-}
-
-bool rTNTC(Node *p, Node *c, int *dp, int data) {
-	Node *rp = c->ch[R];
-	if (STATUS(rp) == NORMAL) {
-		Node *rPtr = GETADDR(rp);
-		if ((GETADDR(rPtr->ch[L]) == NULL) && (GETADDR(rPtr->ch[R]) == NULL) && (STATUS(rPtr->ch[L]) == MARKED) && (STATUS(rPtr->ch[R]) == MARKED)) {
-			if (CAS(&(c->ch[R]), rPtr, NORMAL, NULL, MARKED)) {
-				markLeft(c);
-				return rTN(p, c, data);
-			}
-			return rTNTC(p, c, dp, data);
-		}
-	}
-	else if (STATUS(rp) == MARKED) {
-		markLeft(c);
-		return rTN(p, c ,data);
-	}
-	else if ((STATUS(rp) == UNQNULL) && (GETADDR(rp) != root)) {
-		return rT(p, data);
-	}
-	else if (STATUS(rp) == PROMOTE) {
-		markLeft(c);
-		hSD(dp, GETADDR(rp),GETADDR(rp)->dp);
-		rTN(p, c, data);
-		return rT(GETADDR(rp)->bl, data);
-	}
-	
-	Node *lp = c->ch[L];
-	if (STATUS(lp) != NORMAL)
-		return rT(p, data);
-
-	Node *sc = c;
-	Node *sr = GETADDR(lp);
-	while(true) {
-		if (ISNULL(sr) || (STATUS(sr) == PROMOTE)) {
-			break;
-		}
-		sc = GETADDR(sc);
-		sr = GETADDR(sc)->ch[R];
-	}
-	int *sdp = sc->dp;
-	int sd = *(int *)((uintptr_t)sdp & ~0x03);
-	if (data != GETDATA(c))
-		return false;
-	if ((GETADDR(sr) == root) && (STATUS(sc->dp) == MARKED)) {
-		rTNTC(sc->bl, sc, sdp, sd);
-		return rTNTC(p, c, dp, data);
-	}
-	else if (CAS(&(sc->ch[R]), sr, UNQNULL, c, PROMOTE)) {
-		// CASE of Promote.
-		hSD(sdp, c, dp);
-		mS_t stat = markLeftPromote(sc);
-		rTN(sc->bl, sc, sd);
-		if (stat == R_AN) {
-			return rT(p, sd);
-		}
-		return true;
-	}
-	else if (STATUS(sr) == PROMOTE) {
-		hSD(sdp, c, dp);
-		mS_t stat = markLeftPromote(sc);
-		rTN(sc->bl, sc, sd);
-		if (stat == R_AN) {
-			return rT(p, sd);
-		}
-		return true;
-	}
-	else if (STATUS(sr) == MARKED) {
-		markLeft(sc);
-		rTN(sc->bl, sc, sd);
-		return rTNTC(p, c, dp, data);
-	}
-	return rTNTC(p, c, dp, data);
 }
 
 bool rT(Node *startNode, int data) {
-	//std::cout<<"Removing  : "<<data<<std::endl;
-	sN* remSeek = sT(startNode, data);
-	Node *aN = remSeek->aN;
-	Node *p = remSeek->p;
-	Node *c = remSeek->c;
-	int aNDP = remSeek->aND;
-	int aNDC = GETDATA(aN);
-	if (aNDP != aNDC)
-		return rT(aN->bl, data);
+	sN *rS = sT(root, root, data);
+	Node *p = rS->p;
 	int pD = GETDATA(p);
-	if (ISNULL(c) || ((STATUS(c) == PROMOTE)  && (data > pD))) {
+	Node *c = rS->c;
+	Node *a = rS->aN;
+	int aNDP = rS->aND;
+	int *adp = a->dp;
+	int aNDC = *(int *)((uintptr_t)adp & ~0x03);
+	if (aNDP != aNDC) {
+		return rT(root, data);
+	}
+	else if (ISNULL(c)) {
+		Node *ca = GETADDR(c);
+		std::cout<<p->ch[R]<<" "<<p->ch[L]<<std::endl;
+		std::cout<<c<<std::endl;
+		std::cout<<STATUS(ca->ch[R])<<" "<<STATUS(ca->ch[L])<<std::endl;
+		std::cout<<data<<" "<<__LINE__<<std::endl;
 		return false;
 	}
-	int *cDP = GETADDR(c)->dp;
-	int cD = *(int *)((uintptr_t)cDP & ~0x03);
-	if (data == cD) {
-		c = GETADDR(c);
-		mS_t stat = mTN(c, cDP);
-	//	std::cout<<data<<" : "<<stat<<std::endl;
-		if (stat == R_0C) {
-			return rTN(p, c, data);
-		}
-		else if (stat == R_1C) {
+	else if ((STATUS(c) == PROMOTE) && (p->ch[R] == c)) {
+		std::cout<<data<<" "<<__LINE__<<std::endl;
+		return false;
+	}
+	c = GETADDR(c);
+	int *cdp = c->dp;
+	int cd = *(int *)((uintptr_t)cdp & ~0x03);
+	Node *rp = c->ch[R];
+	Node *lp = c->ch[L];
+	if (data == cd) {
+		mS_t stat = mTN(c, rp, lp, cdp, data);
+		//std::cout<<__LINE__<<" "<<data<<" : "<<stat<<" "<<STATUS(c->ch[R])<<" "<<STATUS(c->ch[L])<<std::endl;
+		//std::cout<<rp<<" "<<lp<<" "<<root<<std::endl;
+		cdp = c->dp;
+		if (stat == RETRY)
+			return rT(root, data);
+		else if ((stat == R_0C) || (stat == R_1C)) {
 			return rTN(p, c, data);
 		}
 		else if (stat == R_2C) {
-			return rTNTC(p, c, cDP, data);
+			return rTNTC(p, c, cdp, data);
 		}
 		else if (stat == R_AN) {
-			hSD(cDP, GETADDR(c->ch[R]), GETADDR(c->ch[R])->dp);
-			rTN(p, c, data);
-			return rT(root, data);
+			// This means both left and right childs are marked promote.
+			if ((STATUS(c->ch[R]) == PROMOTE) && (STATUS(c->ch[L]) == PROMOTE)) {
+					CAS(&(a->dp), adp, MARKED, cdp, MARKED);
+					rTN(p, c, data);
+					return rT(root, data);
+			}
+			else {
+				//std::cout<<data<<" "<<__LINE__<<" "<<STATUS(c->ch[R])<<" "<<STATUS(c->ch[L])<<std::endl;
+				return rT(root, data);
+			}
 		}
-		DEBUG_MSG(c);
 		return false;
 	}
-	else 
-		return rT(root, data);
+	else {
+		//INV_MSG(data)
+		return false;
+	}
 }
 
 bool iTN(Node *p, Node *c, int stat, int data) {
@@ -546,8 +625,12 @@ bool iTN(Node *p, Node *c, int stat, int data) {
 }
 
 
+bool hSD(int *pdp, Node *an, int *andp) {
+	return CAS(&(an->dp), andp, MARKED, pdp, STATUS(pdp));
+}
+
 bool iT(Node *startNode, int data) {
-	sN* insSeek = sT(startNode, data);
+	sN* insSeek = sT(startNode, root, data);
 	Node *aN = insSeek->aN;
 	Node *p = insSeek->p;
 	Node *c = insSeek->c;
@@ -561,7 +644,8 @@ bool iT(Node *startNode, int data) {
 			return iTN(p, GETADDR(c), UNQNULL, data);
 		}
 		else if (STATUS(c) == PROMOTE) {
-			hSD(p->dp, GETADDR(c), GETADDR(c)->dp);
+			if (!ISNULL(c))
+				hSD(p->dp, GETADDR(c), GETADDR(c)->dp);
 			return iT(aN->bl, data);
 		}
 		else if (STATUS(c) == MARKED) {
@@ -590,7 +674,7 @@ bool iT(Node *startNode, int data) {
 		// in insert style 
 		if (ISMARKED(c)) {
 			rT(GETADDR(c)->bl, data);
-			return iT(p, data);
+			return iT(root, data);
 		}
 		// returning true for now
 		return false;
@@ -599,7 +683,7 @@ bool iT(Node *startNode, int data) {
 }
 
 bool searchT(Node *startNode, int data) {
-	sN* serSeek = sT(startNode, data);
+	sN* serSeek = sT(startNode, root, data);
 	Node *aN = serSeek->aN;
 	Node *p = serSeek->p;
 	Node *c = serSeek->c;
@@ -642,17 +726,22 @@ void printTree(Node *node) {
 }
 
 void printTreeRemove(Node *node) {
-	if (ISNULL(node))
+	if (ISNULL(node) || (STATUS(node) == PROMOTE))
 		return;
 	printTreeRemove(GETADDR(node)->ch[L]);
-	std::cout<<"[VARUN] : ";
-	DEBUG_MSG(GETADDR(node));
-	std::cout<<" "<<GETDATA(node)<<std::endl;
+	//if ((STATUS(GETADDR(node)->ch[L]) != MARKED) && (STATUS(GETADDR(node)->ch[R]) != MARKED)) {
+	//	if (STATUS(GETADDR(node)->dp) == NORMAL ) {
+			std::cout<<"[VARUN] : "<<GETDATA(node)<<" ";
+			std::cout<<(STATUS(GETADDR(node)->ch[L]) )<<" " <<(STATUS(GETADDR(node)->ch[R]) )<<" "<<(STATUS(GETADDR(node)->dp) )<<std::endl;
+	//	}
+//		std::cout<<" "<<GETDATA(node)<<" ";
+//		std::cout<<(STATUS(GETADDR(node)->ch[L]) )<<" " <<(STATUS(GETADDR(node)->ch[R]) )<<" "<<(STATUS(GETADDR(node)->dp) )<<std::endl;
+	//}
 	printTreeRemove(GETADDR(node)->ch[R]);
 }
 
 void testbenchParallel() {
-	const int n = 1000;
+	const int n = 100;
 	srand(time(NULL));
 	int arr[n];
 	std::vector<std::thread> addT(n);
@@ -667,7 +756,7 @@ void testbenchParallel() {
 		addT[i] = std::thread(&iT, root, arr[i]);
 	for (int i = 0; i < n ; i++)
 		addT[i].join();
-	printTree(root->ch[L]);
+	//printTree(root->ch[L]);
 	
 	for (int i = 0; i < n ; i++)
 		serT[i] = std::thread(&searchT, root, arr[i]);
@@ -683,14 +772,76 @@ void testbenchParallel() {
 }
 
 void *test(void *_data) {
-	thread_data_t *data = (thread_data_t *)_data;
-	while(!start) {}	
-	std::cout<<data->id<<std::endl;
-	while(!stop) {}	
+	thread_data_t *tData = (thread_data_t *)_data;
+	int lseed;
+	int chooseOperation, key;
+	const gsl_rng_type* T;
+	gsl_rng* r;
+	gsl_rng_env_setup();
+	T = gsl_rng_default;
+	r = gsl_rng_alloc(T);
+	lseed = tData->seed;
+	gsl_rng_set(r,lseed);
+	while(!start){}
+	while(!steadyState) {
+		chooseOperation = gsl_rng_uniform(r)*100;
+		key = gsl_rng_uniform_int(r, range) ;
+		if (chooseOperation < searchPer) {
+			searchT(root, key);
+		}
+		else if ((chooseOperation < insertPer)) {
+			iT(root, key);
+		}
+		else if (chooseOperation < removePer) {
+			rT(root, key);
+		}
+	}
+	tData->readCount = 0;
+	tData->insertCount = 0;
+	tData->deleteCount = 0;
+	std::cout<<"Starting : "<<stop<<std::endl;
+	while(!stop) {
+    	chooseOperation = gsl_rng_uniform(r)*100;
+		key = gsl_rng_uniform_int(r, range) ;
+		if (chooseOperation < searchPer) {
+			tData->readCount++;
+			searchT(root, key);
+		}
+		else if ((chooseOperation < insertPer)) {
+			tData->insertCount++;
+			iT(root, key);
+		}
+		else if (chooseOperation < removePer) {
+			tData->deleteCount++;
+			rT(root, key);
+		}
+	}
+	return NULL;
+}
+
+int isValidTree(Node *node) {
+	int k = GETDATA(node);
+	Node *lp = GETADDR(node)->ch[L];
+	Node *rp = GETADDR(node)->ch[R];
+	if (!ISNULL(lp)) {
+		int lK = isValidTree(GETADDR(lp));
+		if (lK >= k) {
+			std::cout<<"Error : Sanity Check failed : "<<__LINE__<<std::endl;
+			exit(1);
+		}
+	}
+	if (!ISNULL(rp)) {
+		int rK = isValidTree(GETADDR(rp));
+		if (rK < k) {
+			std::cout<<"Error : Sanity Check failed : "<<__LINE__<<std::endl;
+			exit(1);
+		}
+	}
+	return k;
 }
 
 int main(int argc, char **argv) {
-	/* This code is for synchrobench. Here it starts */
+	/* This code is for synchrobench. Here it starts *
 	struct option long_options[] = {
 		{"help", 				no_argument, 		NULL, 'h'},
 		{"duration",			required_argument,	NULL, 'D'},
@@ -709,15 +860,6 @@ int main(int argc, char **argv) {
 	barrier_t barrier;
 	struct timespec timeout;
  
-	int duration = DEFAULT_DURATION;
-	int dataSize = DEFAULT_DATA_SIZE;
-	int numThreads = DEFAULT_THREADS;
-	int range = DEFAULT_RANGE;
-	unsigned int seed = DEFAULT_SEED;
-	int insertPer = DEFAULT_INSERT;
-	int removePer = DEFAULT_REMOVE;
-	int searchPer = DEFAULT_SEARCH;
-	int initialSize = ((dataSize)/2);
 
 	while(1) {
 		int i = 0, c;
@@ -775,9 +917,7 @@ int main(int argc, char **argv) {
 	std::cout<<"Remove Percentage : "<<removePer<<std::endl;
 	std::cout<<"Search Percentage : "<<searchPer<<std::endl;
 
-	timeout.tv_sec = duration / 1000;
-	timeout.tv_nsec = ( duration % 1000) * 1000000;
-
+    timeout.tv_sec = duration;
 	data = (thread_data_t *)malloc(numThreads * sizeof(thread_data_t));
 	threads = (pthread_t *)malloc(numThreads * sizeof(pthread_t));
 
@@ -788,13 +928,21 @@ int main(int argc, char **argv) {
 
 	std::cout<<"Pre Populating the tree with initial size of : "<<initialSize<<std::endl;
 	int i = 0;
+	const gsl_rng_type* T;
+  gsl_rng* r;
+  gsl_rng_env_setup();
+  T = gsl_rng_default;
+  r = gsl_rng_alloc(T);
+  gsl_rng_set(r,seed);
 	while(i < initialSize) {
-		int val = rand_range_re(&seed, range);
+		int val = gsl_rng_uniform_int(r, range); 
 		if (iT(root, val)) {
-			i++;
 		}
+			i++;
 	}
 	
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
 	for (int i = 0; i <numThreads; i++) {
 		data[i].id = i;
 		data[i].seed = seed;
@@ -815,15 +963,25 @@ int main(int argc, char **argv) {
 		pthread_create(&threads[i], NULL, test, (void *)(&data[i]));
 	}
 
+    pthread_attr_destroy(&attr);
+	struct timespec transientTime;	
+	transientTime.tv_sec=0;
+	transientTime.tv_nsec=2000000;
 	std::cout<<"STARTING..."<<std::endl;
-	start = true;
-	nanosleep(&timeout, NULL);
+	__atomic_store_n(&start, true, 0);
+	//nanosleep(&transientTime, NULL);
+	__atomic_store_n(&steadyState, true, 0);
+	//nanosleep(&timeout, NULL);
+	sleep(duration);
 	stop = true;
 	std::cout<<"STOPPING..."<<std::endl;
-	for (int i = 0; i < numThreads ; i++)
-		pthread_join(threads[i], NULL);
-	std::cout<<"STOPPING..."<<std::endl;
-	
+	for (int i = 0; i < numThreads ; i++) {
+		if(pthread_join(threads[i], NULL) != 0) {
+			std::cout<<"Error waiting for thread joinig"<<std::endl;
+			exit(0);
+		}
+	}
+
   unsigned long totalReadCount=0;
   unsigned long totalSuccessfulReads=0;
   unsigned long totalUnsuccessfulReads=0;
@@ -859,8 +1017,10 @@ int main(int argc, char **argv) {
 	unsigned long totalOperations = totalReadCount + totalInsertCount + totalDeleteCount;
 	// Here we need to add all the results and also update the methods
 	// to contain data[i], insertCounts and retries etc.
-
 	/* This code is for synchrobench. Here it ends*/
-	//testbenchParallel();
+	//isValidTree(root);
+	//double MOPS = (totalOperations/(duration*1000000.0));
+	//std::cout<<"Through Put is : "<<MOPS<<std::endl;
+	testbenchParallel();
 	return 0;
 }
