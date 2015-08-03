@@ -364,9 +364,11 @@ mS_t mTN(Node *c, Node *rp, Node *lp, int *cdp, int data) {
 	}
 	if ((STATUS(rp) == PROMOTE) && (STATUS(lp) == PROMOTE))
 		return R_2C;
+	else if ((STATUS(rp) == PROMOTE) && (STATUS(lp) == MARKED)){
+		return R_1C;
+	}
 	else {
-		INV_MSG(data)
-		exit(1);
+		return RETRY;
 	}
 }
 
@@ -377,20 +379,52 @@ bool rTN(Node *p, Node *c, int data) {
 	if (((STATUS(rp) == MARKED) && (STATUS(lp) == MARKED)) || ((STATUS(rp) == PROMOTE) && (STATUS(lp) == PROMOTE)) || ((STATUS(rp) == PROMOTE) && (STATUS(lp) == MARKED))) {
 		Node *ptr;
 		int status;
-		if (ISNULL(lp) && ((ISNULL(rp)) || (STATUS(rp) == PROMOTE))) {
-			if (STATUS(p->dp) == MARKED)
-				ptr = root, status = UNQNULL;
-			ptr = c, status = UNQNULL;
+		
+		if ((STATUS(rp) == MARKED) && (STATUS(lp) == MARKED)) {
+			if (GETADDR(lp) == NULL) {
+				if (GETADDR(rp) == NULL) {
+					if (STATUS(p->dp) == MARKED)
+						ptr = root, status = UNQNULL;
+					else
+						ptr = GETADDR(c), status = UNQNULL;
+				}
+				else {
+					ptr = GETADDR(rp), status = NORMAL;
+				}
+			}
+			else if (GETADDR(rp) == NULL) {
+				if (GETADDR(lp) == NULL) {
+					if (STATUS(p->dp) == MARKED)
+						ptr = root, status = UNQNULL;
+					else
+						ptr = GETADDR(c), status = UNQNULL;
+				}
+				else {
+					ptr = GETADDR(lp), status = NORMAL;
+				}
+			}
 		}
-		else if (ISNULL(lp))
-			ptr = GETADDR(rp), status = NORMAL;
-		else
-			ptr = GETADDR(lp), status = NORMAL;
+		else if ((STATUS(rp) == PROMOTE) && (STATUS(lp) == MARKED)) {
+			if (GETADDR(lp) == NULL) {
+				ptr = GETADDR(c), status = UNQNULL;
+			}
+			else {
+				ptr = GETADDR(lp), status = NORMAL;
+			}			
+		}
+		else if ((STATUS(rp) == PROMOTE) && (STATUS(lp) == PROMOTE)) {
+			if (GETADDR(lp) == NULL) {
+				ptr = GETADDR(c), status = UNQNULL;
+			}
+			else {
+				ptr = GETADDR(lp), status = NORMAL;
+			}			
+		}
 		
 		if (GETADDR(p->ch[R]) == c) {
 			if (CAS(&(p->ch[R]), c, NORMAL, ptr, status)) {
 				if (ptr != root && ptr != NULL)
-					ptr->bl = p;
+					CAS(&(ptr->bl), c, NORMAL, p, NORMAL);
 				return true;
 			}
 			else {
@@ -405,7 +439,7 @@ bool rTN(Node *p, Node *c, int data) {
 				else if (STATUS(pR) == NORMAL) {
 					if (GETADDR(pR) != c) {
 						if (ptr != root && ptr != NULL)
-							CAS(&(ptr->bl), c, NORMAL, c->bl, NORMAL);
+							CAS(&(ptr->bl), c, NORMAL, p, NORMAL);
 						return false;
 					}
 					else {
@@ -421,7 +455,7 @@ bool rTN(Node *p, Node *c, int data) {
 		else if (GETADDR(p->ch[L]) == c){
 			if (CAS(&(p->ch[L]), c, NORMAL, ptr, status)) {
 				if (ptr != root && ptr != NULL) {
-					ptr->bl = p;	
+					CAS(&(ptr->bl), c, NORMAL, p, NORMAL);
 				}
 				return true;
 			}
@@ -437,7 +471,7 @@ bool rTN(Node *p, Node *c, int data) {
 				else if (STATUS(pL) == NORMAL) {
 					if (GETADDR(pL) != c) {
 						if (ptr != root && ptr != NULL)
-							CAS(&(ptr->bl), c, NORMAL, c->bl, NORMAL);
+							CAS(&(ptr->bl), c, NORMAL, p, NORMAL);
 						return false;
 					}
 					else {
@@ -489,8 +523,9 @@ bool rTNTC(Node *p, Node *c, int *cdp, int data) {
 		int sd = *(int *)((uintptr_t)sdp & ~0x03);
 		if (data != GETDATA(c))
 			return false;
-		if (STATUS(sr) == MARKED) {
-			rTN(sc->bl, sc, data);
+		if (STATUS(sr) == MARKED) {	
+			markLeft(sc);
+			rTN(sc->bl, sc, sd);
 			return rT(root, data);
 		}
 		else if (STATUS(sr) == NORMAL) {
@@ -506,6 +541,7 @@ bool rTNTC(Node *p, Node *c, int *cdp, int data) {
 					return rTN(sc->bl, sc, sd);
 				}
 				else {
+					rTN(sc->bl, sc, sd);
 					return rT(root, data);
 				}
 			}
@@ -521,6 +557,7 @@ bool rTNTC(Node *p, Node *c, int *cdp, int data) {
 				return rTN(sc->bl, sc, sd);
 			}
 			else {
+				rTN(sc->bl, sc, sd);
 				return rT(root, data);
 			}
 		}
@@ -530,7 +567,6 @@ bool rTNTC(Node *p, Node *c, int *cdp, int data) {
 		}
 	}
 	else {
-		INV_MSG(data)
 		return rT(root, data);
 	}
 }
@@ -548,10 +584,14 @@ bool rT(Node *startNode, int data) {
 		return rT(root, data);
 	}
 	else if (ISNULL(c)) {
-		Node *ca = GETADDR(c);
-		std::cout<<p->ch[R]<<" "<<p->ch[L]<<std::endl;
-		std::cout<<c<<std::endl;
-		std::cout<<STATUS(ca->ch[R])<<" "<<STATUS(ca->ch[L])<<std::endl;
+//		Node *ca = GETADDR(c);
+//		std::cout<<p->ch[R]<<" "<<p->ch[L]<<std::endl;
+//		std::cout<<c<<std::endl;
+//		std::cout<<data<<std::endl;
+//		std::cout<<GETDATA(p)<<std::endl;
+//		//std::cout<<STATUS(ca->ch[R])<<" "<<STATUS(ca->ch[L])<<std::endl;
+//		//std::cout<<(ca->ch[R])<<" "<<(ca->ch[L])<<std::endl;
+		return rT(root, data);
 		std::cout<<data<<" "<<__LINE__<<std::endl;
 		return false;
 	}
@@ -589,6 +629,9 @@ bool rT(Node *startNode, int data) {
 				return rT(root, data);
 			}
 		}
+		else if (stat == A_R)
+			INV_MSG(data)
+		INV_MSG(data)
 		return false;
 	}
 	else {
@@ -725,23 +768,26 @@ void printTree(Node *node) {
 	printTree(GETADDR(node)->ch[R]);
 }
 
-void printTreeRemove(Node *node) {
+void printTreeRemove(Node *pred, Node *node) {
 	if (ISNULL(node) || (STATUS(node) == PROMOTE))
 		return;
-	printTreeRemove(GETADDR(node)->ch[L]);
+	printTreeRemove(node, GETADDR(node)->ch[L]);
 	//if ((STATUS(GETADDR(node)->ch[L]) != MARKED) && (STATUS(GETADDR(node)->ch[R]) != MARKED)) {
 	//	if (STATUS(GETADDR(node)->dp) == NORMAL ) {
 			std::cout<<"[VARUN] : "<<GETDATA(node)<<" ";
 			std::cout<<(STATUS(GETADDR(node)->ch[L]) )<<" " <<(STATUS(GETADDR(node)->ch[R]) )<<" "<<(STATUS(GETADDR(node)->dp) )<<std::endl;
+			std::cout<<(STATUS(GETADDR((GETADDR(node)->ch[R]))->ch[R]))<<" " <<(STATUS(GETADDR((GETADDR(node)->ch[R]))->ch[L]))<<" "<<((STATUS(GETADDR((GETADDR(node)->ch[R]))->dp)))<<std::endl;
+			std::cout<<pred<<" "<<pred->ch[R]<<" "<<pred->ch[L]<<std::endl;
+			std::cout<<node<<" "<<node->ch[R]<<" "<<node->ch[L]<<std::endl;
 	//	}
 //		std::cout<<" "<<GETDATA(node)<<" ";
 //		std::cout<<(STATUS(GETADDR(node)->ch[L]) )<<" " <<(STATUS(GETADDR(node)->ch[R]) )<<" "<<(STATUS(GETADDR(node)->dp) )<<std::endl;
 	//}
-	printTreeRemove(GETADDR(node)->ch[R]);
+	printTreeRemove(node, GETADDR(node)->ch[R]);
 }
 
 void testbenchParallel() {
-	const int n = 100;
+	const int n = 1000;
 	srand(time(NULL));
 	int arr[n];
 	std::vector<std::thread> addT(n);
@@ -768,7 +814,7 @@ void testbenchParallel() {
 	for (int i = 0; i < n ; i++)
 		remT[i].join();
 	std::cout<<"Printing after removing elements"<<std::endl;
-	printTreeRemove(root->ch[L]);
+	printTreeRemove(root, root->ch[L]);
 }
 
 void *test(void *_data) {
