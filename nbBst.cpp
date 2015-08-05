@@ -67,6 +67,7 @@ seekNode* seekTree(Node *startNode, Node *myAncNode, int data) {
 	Node *pred = curr->bl;
 	int ancNodeData = GETDATA(ancNode);
 	while(true) {
+		int predData = GETDATA(pred);
 		if (ISNULL(curr) || ((STATUS(curr) == PROMOTE) && (GETADDR(curr) == ancNode))) 
 			break;
 		int currData = GETDATA(curr);
@@ -222,10 +223,11 @@ bool removeTreeNode(Node *pred, Node *curr, int data) {
 	if (data > pd) {
 		if (CAS(&(pred->child[RIGHT]), curr, NORMAL, ptr, status)) {
 			if (ptr != root && ptr != NULL)
-				CAS(&(ptr->bl), curr, NORMAL, pred, NORMAL);
+				ptr->bl = pred;
 			return true;
 		}
 		else {
+			return removeTree(root, data);
 			Node *predPtr = pred->child[RIGHT];
 			if ((STATUS(predPtr) == MARKED) && (GETADDR(predPtr) == curr)) {
 				Node *predBl = pred->bl;
@@ -236,16 +238,19 @@ bool removeTreeNode(Node *pred, Node *curr, int data) {
 				}
 				return removeTreeNode(curr->bl, curr, data);
 			}
+			if (ptr != root && ptr != NULL && ptr->bl == curr)
+				ptr->bl = pred;
 		}
 		return false;
 	}
 	else {
 		if (CAS(&(pred->child[LEFT]), curr, NORMAL, ptr, status)) {
 			if (ptr != root && ptr != NULL)
-				CAS(&(ptr->bl), curr, NORMAL, pred, NORMAL);
+				ptr->bl = pred;
 			return true;
 		}
 		else {
+			return removeTree(root, data);
 			Node *predPtr = pred->child[LEFT];
 			if (((STATUS(predPtr) == MARKED) || (STATUS(predPtr) == PROMOTE)) && (GETADDR(predPtr) == curr)) {
 				Node *predBl = pred->bl;
@@ -272,10 +277,10 @@ bool removeTreeNodeTwoChild(Node *pred, Node *curr, int *dp, int data) {
 	if (STATUS(rp) == NORMAL) {
 		Node *rPtr = GETADDR(rp);
 		if ((GETADDR(rPtr->child[RIGHT]) == NULL) && (GETADDR(rPtr->child[LEFT]) == NULL) && (STATUS(rPtr->child[RIGHT]) == MARKED) && (STATUS(rPtr->child[LEFT]) == MARKED)) {
-			if (CAS(&(curr->child[RIGHT]), rp, NORMAL, NULL, MARKED)) {
-				markLeft(curr);
-				return removeTreeNode(pred, curr, data);
+			if (CAS(&(curr->child[RIGHT]), rPtr, NORMAL, rPtr, UNQNULL)) {
+				return removeTree(root, data);
 			}
+			return removeTree(root, data);
 			return removeTreeNodeTwoChild(pred, curr, dp, data);
 		}
 	}
@@ -283,6 +288,12 @@ bool removeTreeNodeTwoChild(Node *pred, Node *curr, int *dp, int data) {
 		return removeTree(root, data);
 	}
 	else if ((STATUS(rp) == UNQNULL) && (GETADDR(rp) != root)) {
+		return removeTree(root, data);
+	}
+	else if (STATUS(rp) == PROMOTE) {
+		helpSwapData(dp, GETADDR(rp), GETADDR(rp)->dataPtr);
+		markLeftPromote(curr);
+		removeTreeNode(pred, curr, data);
 		return removeTree(root, data);
 	}
 	Node *lp = curr->child[LEFT];
@@ -298,7 +309,9 @@ bool removeTreeNodeTwoChild(Node *pred, Node *curr, int *dp, int data) {
 		return false;
 	if ((GETADDR(sr) == root) && (STATUS(sdp) == MARKED)) {
 		removeTreeNodeTwoChild(sc->bl, sc, sdp, sd);
-		return removeTreeNodeTwoChild(pred, curr, dp, data);
+		removeTree(root, sd);
+		//return removeTreeNodeTwoChild(pred, curr, dp, data);
+		return removeTree(root, data);
 	}
 	else if (CAS(&(sc->child[RIGHT]), sr, UNQNULL, curr, PROMOTE)) {
 		helpSwapData(sdp, curr, dp);
@@ -317,12 +330,41 @@ bool removeTreeNodeTwoChild(Node *pred, Node *curr, int *dp, int data) {
 	else if (STATUS(sr) == MARKED) {
 		markLeft(sc);
 		removeTreeNode(sc->bl, sc, sd);
-		return removeTreeNodeTwoChild(pred, curr, dp, data);
+		return removeTree(root, data);
 	}
-	return removeTreeNodeTwoChild(pred, curr, dp, data);
+		return removeTree(root, data);
+}
+
+bool removeTreeNodeZeroChild(Node *pred, Node *curr, int data) {
+	int predData = GETDATA(pred);
+	if (data > predData) {
+		if (STATUS(curr->dataPtr) == MARKED) {
+			if (CAS(&(pred->child[RIGHT]), curr, NORMAL, root, UNQNULL))
+				return true;
+			else
+				return removeTree(root, data);
+		}
+		else {
+			if (CAS(&(pred->child[RIGHT]), curr, NORMAL, curr, UNQNULL)) {
+				return true;
+			}
+			else
+				return removeTree(root, data);
+		}
+	}
+	else {
+		if (CAS(&(pred->child[LEFT]), curr, NORMAL, curr, UNQNULL)) {
+			return true;
+		}
+		else
+			return removeTree(root, data);
+	}
 }
 
 bool removeTree(Node *sn, int data) {
+//	myMutex.lock();
+	//std::cout<<"Removing : "<<data<<std::endl;
+//	myMutex.unlock();
 	seekNode *rs = seekTree(sn, root, data);	
 	Node *ancNode = rs->ancNode;
 	Node *pred = rs->pred;
@@ -337,21 +379,28 @@ bool removeTree(Node *sn, int data) {
 	int cd = *(int *)((uintptr_t)cdp & ~0x03);
 	if (data == cd) {
 		markStatus_t stat = markTreeNode(GETADDR(curr), cdp);
-		//std::cout<<data<<" : "<<stat<<std::endl;
-		if ((stat == REMOVE_0C) || (stat == REMOVE_1C))
+	//	myMutex.lock();
+	//	std::cout<<data<<" : "<<stat<<std::endl;
+	//	myMutex.unlock();
+		if (stat == REMOVE_0C) {
+			return removeTreeNodeZeroChild(pred, GETADDR(curr), data);
+		}
+		if ((stat == REMOVE_1C))
 			return removeTreeNode(pred, GETADDR(curr), data);
 		else if (stat == REMOVE_2C) 
 			return removeTreeNodeTwoChild(pred, GETADDR(curr), cdp, data);
 		else if (stat == REMOVE_ANCNODE) {
 			markLeft(curr);
 			helpSwapData(cdp, GETADDR(curr->child[RIGHT]), GETADDR(curr->child[RIGHT])->dataPtr);
-			removeTreeNode(pred, GETADDR(curr), data);
+			removeTree(root, data);
+			return removeTree(root, data);
+		}
+		else if (stat == HELP_REMOVE) {
 			return removeTree(root, data);
 		}
 		return false;
 	}
-	std::cout<<" [BUG] : "<<data<<std::endl;
-	return false;
+	return removeTree(root, data);
 }
 
 bool insertTree(Node *startNode, int data) {
@@ -365,7 +414,7 @@ bool insertTree(Node *startNode, int data) {
 			pred->child[RIGHT] = myNode;
 			return true;	
 		}
-		else {
+		else if (data < predData){
 			pred->child[LEFT] = myNode;
 			return true;	
 		}
@@ -390,7 +439,7 @@ void printTreeRem(Node *node) {
 }
 
 void testbenchParallel() {
-	const int numThreads = 100;
+	const int numThreads = 1000;
 	srand(time(NULL));
 	int arr[numThreads];
 	std::vector<std::thread> removeT(numThreads);
@@ -402,7 +451,7 @@ void testbenchParallel() {
 	for (int i = 0; i < numThreads; i++) {
 		insertTree(root, arr[i]);
 	}
-	printTree(root->child[LEFT]);
+//	printTree(root->child[LEFT]);
 	std::cout<<"Removing Elements"<<std::endl;
 	for (int i = 0; i < numThreads; i++) 
 		removeT[i] = std::thread(&removeTree, root->child[LEFT], arr[i]);
