@@ -3,9 +3,80 @@
 #include <climits>
 #include <vector>
 #include <thread>
+#include <gsl/gsl_rng.h>
+#include <gsl/gsl_randist.h>
+#include <sys/time.h>
+#include <signal.h>
+#include <getopt.h>
+#include <stdint.h>
+#include <pthread.h>
+#include <ctime>
+#include <unistd.h>
 
 const int L = 0, R = 1;
 const int NORMAL = 0, MARKED = 1, PROMOTE = 2, UNQNULL = 3;
+
+volatile bool start = false, stop = false, steadyState = false;
+
+/* This code belongs to Synchrobench testbench */
+#define DEFAULT_DURATION 2
+#define DEFAULT_DATA_SIZE 256
+#define DEFAULT_THREADS 1
+#define DEFAULT_RANGE 0x7FFFFFFF
+#define DEFAULT_SEED 0
+#define DEFAULT_INSERT 20
+#define DEFAULT_REMOVE 10
+#define DEFAULT_SEARCH 70
+
+int duration = DEFAULT_DURATION;
+int dataSize = DEFAULT_DATA_SIZE;
+int numThreads = DEFAULT_THREADS;
+int range = DEFAULT_RANGE;
+unsigned int seed = DEFAULT_SEED;
+int insertPer = DEFAULT_INSERT;
+int removePer = DEFAULT_REMOVE;
+int searchPer = DEFAULT_SEARCH;
+int initialSize = ((dataSize)/2);
+
+typedef struct thread_data {
+	int id;
+	unsigned long seed;
+	unsigned long readCount;
+	unsigned long successfulReads;
+	unsigned long unSuccessfulReads;
+	unsigned long readRetries;
+	unsigned long insertCount;
+	unsigned long successfulInserts;
+	unsigned long unSuccessfulInserts;
+	unsigned long insertRetries;
+	unsigned long deleteCount;
+	unsigned long successfulDeletes;
+	unsigned long unSuccessfulDeletes;
+	unsigned long deleteRetries;
+	unsigned long seekRetries;
+
+} thread_data_t;
+
+struct tArgs
+{
+	int tId;
+	unsigned long lseed;
+	unsigned long readCount;
+	unsigned long successfulReads;
+	unsigned long unsuccessfulReads;
+	unsigned long readRetries;
+	unsigned long insertCount;
+	unsigned long successfulInserts;
+	unsigned long unsuccessfulInserts;
+	unsigned long insertRetries;
+	unsigned long deleteCount;
+	unsigned long successfulDeletes;
+	unsigned long unsuccessfulDeletes;
+	unsigned long deleteRetries;
+	bool isNewNodeAvailable;
+	unsigned long seekRetries;
+	unsigned long seekLength;
+};
 
 enum markStatus_t {
 	REMOVE_ZERO_ONE_CHILD,
@@ -27,6 +98,7 @@ enum markStatus_t {
 #define CAS(ptr, source, sourceState, target, targetState) \
 		__sync_bool_compare_and_swap(ptr, MARKNODE(source, sourceState), MARKNODE(target, targetState))
 
+#define ISMARKED(node) ((STATUS(GETADDR(node)->ch[R]) == MARKED) || (STATUS(GETADDR(node)->ch[L]) == MARKED) || (STATUS(GETADDR(node)->dp) == MARKED))
 
 struct Node {
 	Node *bl;
@@ -53,6 +125,7 @@ struct Node {
 
 // Decleration
 bool removeTree(Node *, Node *, int);
+bool insertTree(int);
 // This is the node that is returned by the seekTree method.
 struct seekNode {
 	Node *ancNode;
@@ -106,10 +179,10 @@ seekNode *seekTree(Node *startNode, Node *_ancNode, int data) {
 	return mySeek;
 };
 
-void printTree(Node *pred, Node *node) {
+void printTreeRemove(Node *pred, Node *node) {
 	if (ISNULL(node) || ((STATUS(node) == PROMOTE) && (GETADDR(pred->ch[R]) == GETADDR(node))))
 		return;
-	printTree(GETADDR(node), GETADDR(node)->ch[L]);
+	printTreeRemove(GETADDR(node), GETADDR(node)->ch[L]);
 	//if (GETDATA(node) != (INT_MAX -1)) {
 		std::cout<<"VARUN ";
 		std::cout<<GETDATA(node)<<" "<<STATUS(GETADDR(node)->ch[L])<<" "<<STATUS(GETADDR(node)->ch[R])<<" "<<STATUS(GETADDR(node)->dp)<<std::endl;
@@ -118,23 +191,74 @@ void printTree(Node *pred, Node *node) {
 		std::cout<<"Curr Right : "<<GETADDR(node)->ch[R]<<" Curr Left : "<<GETADDR(node)->ch[L]<<std::endl;
 		std::cout<<"Pred Right : "<<GETADDR(pred)->ch[R]<<" Pred Left : "<<GETADDR(pred)->ch[L]<<std::endl;
 	//}
+	printTreeRemove(GETADDR(node), GETADDR(node)->ch[R]);
+}
+
+void printTree(Node *pred, Node *node) {
+	if (ISNULL(node) || ((STATUS(node) == PROMOTE) && (GETADDR(pred->ch[R]) == GETADDR(node))))
+		return;
+	printTree(GETADDR(node), GETADDR(node)->ch[L]);
+	std::cout<<GETDATA(node)<<std::endl;
 	printTree(GETADDR(node), GETADDR(node)->ch[R]);
 }
 
+bool insertTreeNode(Node *pred, Node *curr, int stat, int data) {
+	int predData = GETDATA(pred);
+	Node *myNode = new Node(data, pred);
+	if (data > predData) {
+		if (CAS(&(pred->ch[R]), curr, stat, myNode, NORMAL))
+			return true;
+		else {
+			// CAS failed means pred child changed or pred 	
+			// is marked. Both the scenarions are handled by
+			// insert method. We need to restart the insert
+			// from pred
+			return insertTree(data);
+		}
+	}
+	else { 
+		if (CAS(&(pred->ch[L]), curr, stat, myNode, NORMAL))
+			return true;
+		else {
+			// CAS failed means pred child changed or pred 	
+			// is marked. Both the scenarions are handled by
+			// insert method. We need to restart the insert
+			// from pred
+			return insertTree(data);
+		}
+	}
+}
+
+
 bool insertTree(int data) {
 	seekNode *insertSeek = seekTree(root, root, data);
+	Node *ancNode = insertSeek->ancNode;
+	int ancNodeDataSeen = insertSeek->ancNodeData;
 	Node *pred = insertSeek->pred;
 	Node *curr = insertSeek->curr;
-	if (ISUNQNULL(curr)) {
+	if (ISNULL(curr)) {
+		int ancNodeDataCurr = GETDATA(ancNode);
+		if ( (ancNodeDataSeen) != (ancNodeDataCurr)) 
+			return insertTree( data);
+		else if ((ancNode != root) && GETADDR(ancNode->bl->ch[L]) != ancNode && GETADDR(ancNode->bl->ch[R]) != ancNode)
+			return insertTree(data);
+
 		int predData = GETDATA(pred);
-		Node *myNode = new Node(data, pred);
-		if (data > predData)
-			pred->ch[R] = myNode;
-		else if (data < predData)
-			pred->ch[L] = myNode;
-		return true;
+		if (STATUS(curr) == PROMOTE)
+			return insertTree(data);
+		else if (STATUS(curr) == UNQNULL)
+			return insertTreeNode(pred, GETADDR(curr), UNQNULL, data);
+		else if (STATUS(curr) == MARKED) {
+			removeTree(root, root, predData);
+			return insertTree(data);
+		}
 	}
 	else if (data == GETDATA(curr)) {
+		// Here we need to check if curr is marked or not.
+		if (ISMARKED(curr)) {
+			removeTree(root, root, data);
+			return insertTree(data);
+		}
 		return false;
 	}
 }
@@ -437,7 +561,7 @@ bool removeTreeNodeTwoChild(Node *pred, Node *curr,  int *currDataPtr, Node *anc
 						}
 						else {
 							removeTreeNodeZeroOneChild(succPred, succ, succData);
-							return removeTree(root, root, succData);
+							return removeTree(root, root , succData);
 						}
 					}
 					else {
@@ -487,31 +611,13 @@ bool removeTree(Node *startNode, Node* _ancNode, int data) {
 	Node *curr = removeSeek->curr;
 	Node *ancNode = removeSeek->ancNode;
 	int ancNodeDataSeen = removeSeek->ancNodeData;
-	 int *ancNodeDataPtr = ancNode->dp;
-	if (ISNULL(curr)) {
-		int ancNodeDataCurr = GETDATA(ancNode);
-		Node *ancNodeDataRp = ancNode->ch[R];
-		Node *ancNodeDataLp = ancNode->ch[L];
-	//	std::cout<<data<<" "<<__LINE__<<" "<<" pred data : "<<GETDATA(pred)<<" "<<std::endl;
-	//	std::cout<<ancNodeDataRp<<" "<<ancNodeDataLp<<" "<<ancNodeDataCurr<<" "<<ancNodeDataSeen<<std::endl;
-		if ( (ancNodeDataSeen) != (ancNodeDataCurr))  {
-	//		std::cout<<__LINE__<<" "<<ancNodeDataSeen<<" "<<ancNodeDataCurr<<std::endl;
+	int *ancNodeDataPtr = ancNode->dp;
+	int ancNodeDataCurr = *(int *)((uintptr_t)ancNodeDataPtr & ~0x03);
+	if (ISNULL(curr) || ((STATUS(curr) == PROMOTE) && (GETADDR(pred->ch[R]) == GETADDR(curr)))) {
+		if ( (ancNodeDataSeen) != (ancNodeDataCurr)) 
 			return removeTree(root, root, data);
-		}
-		else if (STATUS(ancNodeDataLp) == UNQNULL) { 
-			return false;
-		}
-		else if ((STATUS(ancNodeDataLp) == MARKED) || (STATUS(ancNodeDataLp) == PROMOTE))
+		else if (ancNode != root && GETADDR(ancNode->bl->ch[L]) != ancNode && GETADDR(ancNode->bl->ch[R]) != ancNode)
 			return removeTree(root, root, data);
-		//std::cout<<"Pred : "<<pred<<" Curr : "<<curr<<std::endl;
-		//std::cout<<"Curr Right : "<<GETADDR(curr)->ch[R]<<" Curr Left : "<<GETADDR(curr)->ch[L]<<std::endl;
-	//	//std::cout<<"Pred Right : "<<GETADDR(pred)->ch[R]<<" Pred Left : "<<GETADDR(pred)->ch[L]<<std::endl;
-		//std::cout<<data<<" "<<__LINE__<<" "<<" pred data : "<<GETDATA(pred)<<" "<<tid<<std::endl;
-		//std::cout<<ancNodeDataSeen<<" "<<ancNodeDataSeenD<<" "<<ancNodeDataCurr<<" "<<data<<std::endl;
-		return false;
-	}
-	else if ((STATUS(curr) == PROMOTE) && (GETADDR(pred->ch[R]) == GETADDR(curr))) {
-		std::cout<<data<<" "<<__LINE__<<std::endl;
 		return false;
 	}
 	curr = GETADDR(curr);
@@ -525,10 +631,7 @@ bool removeTree(Node *startNode, Node* _ancNode, int data) {
 		rp = curr->ch[R];
 		lp = curr->ch[L];
 		currDataPtr = curr->dp;
-		if (markStat == RETRY) {
-			return removeTree(root, root, data);
-		}
-		else if (markStat == REMOVE_ZERO_ONE_CHILD) {
+		if (markStat == REMOVE_ZERO_ONE_CHILD) {
 			return removeTreeNodeZeroOneChild(pred, curr, data);
 		}
 		else if (markStat == REMOVE_TWOCHILD) {
@@ -552,21 +655,74 @@ bool removeTree(Node *startNode, Node* _ancNode, int data) {
 }
 
 
+bool searchTree(int data) {
+	seekNode *searchSeek = seekTree(root, root, data);
+	Node *pred = searchSeek->pred;
+	Node *curr = searchSeek->curr;
+	Node *ancNode = searchSeek->ancNode;
+	int ancNodeDataSeen = searchSeek->ancNodeData;
+	int *ancNodeDataPtr = ancNode->dp;
+	int ancNodeDataCurr = *(int *)((uintptr_t)ancNodeDataPtr & ~0x03);
+	if (ISNULL(curr) || ((STATUS(curr) == PROMOTE) && (GETADDR(pred->ch[R]) == GETADDR(curr)))) {
+		if ( (ancNodeDataSeen) != (ancNodeDataCurr)) 
+			return searchTree(data);
+		else if (ancNode != root && GETADDR(ancNode->bl->ch[L]) != ancNode && GETADDR(ancNode->bl->ch[R]) != ancNode)
+			return searchTree(data);
+		return false;
+	}
+	else if (data == GETDATA(curr) && !ISMARKED(curr)) {
+		return true;
+	}
+	return false;
+}
+
+int isValidTree(Node *node) {
+	int k = GETDATA(node);
+	Node *lp = GETADDR(node)->ch[L];
+	Node *rp = GETADDR(node)->ch[R];
+	if (!ISNULL(lp)) {
+		int lK = isValidTree(GETADDR(lp));
+		if (lK >= k) {
+			std::cout<<"Error : Sanity Check failed : "<<__LINE__<<std::endl;
+			exit(1);
+		}
+	}
+	if (!ISNULL(rp)) {
+		int rK = isValidTree(GETADDR(rp));
+		if (rK < k) {
+			std::cout<<"Error : Sanity Check failed : "<<__LINE__<<std::endl;
+			exit(1);
+		}
+	}
+	return k;
+}
 
 void testbenchParallelRemove() {
 	const int numThreads = 1000;
 	int arr[numThreads];
 	srand(time(NULL));
+	std::vector<std::thread> insertThreads(numThreads);
 	std::vector<std::thread> removeThreads(numThreads);
 	for (int i = 0; i < numThreads; i++) {
 		do {
 			arr[i] = rand();
-		} while(arr[i] == INT_MAX || (arr[i] == (INT_MAX - 1)));
+		} while(arr[i] == INT_MAX );
+	}
+//	for (int i = 0; i < numThreads; i++) {
+//	//	std::cout<<"Array is : "<<arr[i]<<std::endl;
+//		insertTree(arr[i]);
+//	}
+	for (int i = 0; i < numThreads; i++) {
+		insertThreads[i] = std::thread(&insertTree, arr[i]);
 	}
 	for (int i = 0; i < numThreads; i++) {
-	//	std::cout<<"Array is : "<<arr[i]<<std::endl;
-		insertTree(arr[i]);
+		insertThreads[i].join();
 	}
+	for (int i = 0; i < numThreads; i++) {
+		if (!searchTree(arr[i]))
+			std::cout<<"ERROR"<<std::endl;
+	}
+	//printTree(root, root->ch[L]);
 	std::cout<<"Removing Elements..."<<std::endl;
 	for (int i = 0; i < numThreads; i++) {
 		removeThreads[i] = std::thread(&removeTree, root, root, arr[i]);
@@ -575,15 +731,432 @@ void testbenchParallelRemove() {
 		removeThreads[i].join();
 	}
 	std::cout<<"Printing after removing elements"<<std::endl;
-	printTree(root, root->ch[L]);
+	printTreeRemove(root, root->ch[L]);
 	
 }
 
-int main(void) {
-	testbenchParallelRemove();
-	return 0;
+
+
+void *test(void *_data) {
+	thread_data_t *tData = (thread_data_t *)_data;
+	int lseed;
+	int chooseOperation, key;
+	const gsl_rng_type* T;
+	gsl_rng* r;
+	gsl_rng_env_setup();
+	T = gsl_rng_default;
+	r = gsl_rng_alloc(T);
+	lseed = tData->seed;
+	gsl_rng_set(r,lseed);
+	while(!start){}
+	while(!steadyState) {
+		chooseOperation = gsl_rng_uniform(r)*100;
+		key = gsl_rng_uniform_int(r, range) ;
+		if (chooseOperation < searchPer) {
+			searchTree( key);
+		}
+		else if ((chooseOperation < insertPer)) {
+			insertTree(key);
+		}
+		else if (chooseOperation < removePer) {
+			removeTree(root, root, key);
+		}
+	}
+	tData->readCount = 0;
+	tData->insertCount = 0;
+	tData->deleteCount = 0;
+	std::cout<<"Starting : "<<stop<<std::endl;
+	while(!stop) {
+    	chooseOperation = gsl_rng_uniform(r)*100;
+		key = gsl_rng_uniform_int(r, range) ;
+		if (chooseOperation < searchPer) {
+			tData->readCount++;
+			searchTree(key);
+		}
+		else if ((chooseOperation < insertPer)) {
+			tData->insertCount++;
+			insertTree(key);
+		}
+		else if (chooseOperation < removePer) {
+			tData->deleteCount++;
+			removeTree(root, root, key);
+		}
+	}
+	return NULL;
+} 
+
+void *operateOnTree(void* tArgs)
+{
+  int chooseOperation;
+  unsigned long lseed;
+	unsigned long key;
+  struct tArgs* tData = (struct tArgs*) tArgs;
+  const gsl_rng_type* T;
+  gsl_rng* r;
+  gsl_rng_env_setup();
+  T = gsl_rng_default;
+  r = gsl_rng_alloc(T);
+	lseed = tData->lseed;
+  gsl_rng_set(r,lseed);
+
+  tData->isNewNodeAvailable=false;
+	tData->readCount=0;
+  tData->successfulReads=0;
+  tData->unsuccessfulReads=0;
+  tData->readRetries=0;
+  tData->insertCount=0;
+  tData->successfulInserts=0;
+  tData->unsuccessfulInserts=0;
+  tData->insertRetries=0;
+  tData->deleteCount=0;
+  tData->successfulDeletes=0;
+  tData->unsuccessfulDeletes=0;
+  tData->deleteRetries=0;
+	tData->seekRetries=0;
+	tData->seekLength=0;
+
+  while(!start)
+  {
+  }
+	while(!steadyState)
+	{
+	  chooseOperation = gsl_rng_uniform(r)*100;
+		key = gsl_rng_uniform_int(r,range) + 2;
+    if(chooseOperation < searchPer)
+    {
+      searchTree(key);
+    }
+    else if (chooseOperation < insertPer)
+    {
+      insertTree(key);
+    }
+    else
+    {
+      removeTree(root, root, key);
+    }
+	}
+	
+  tData->readCount=0;
+  tData->successfulReads=0;
+  tData->unsuccessfulReads=0;
+  tData->readRetries=0;
+  tData->insertCount=0;
+  tData->successfulInserts=0;
+  tData->unsuccessfulInserts=0;
+  tData->insertRetries=0;
+  tData->deleteCount=0;
+  tData->successfulDeletes=0;
+  tData->unsuccessfulDeletes=0;
+  tData->deleteRetries=0;
+	tData->seekRetries=0;
+	tData->seekLength=0;
+	
+	while(!stop)
+  {
+    chooseOperation = gsl_rng_uniform(r)*100;
+		key = gsl_rng_uniform_int(r,range) + 2;
+
+    if(chooseOperation < searchPer)
+    {
+			tData->readCount++;
+      searchTree(key);
+    }
+    else if (chooseOperation < insertPer)
+    {
+			tData->insertCount++;
+      insertTree( key);
+    }
+    else
+    {
+			tData->deleteCount++;
+      removeTree(root, root, key);
+    }
+  }
+  return NULL;
+}
+struct tArgs** tArgs;
+
+int main(int argc, char *argv[])
+{
+	struct timespec runTime,transientTime;
+	unsigned long lseed;
+	//get run configuration from command line
+  numThreads = atoi(argv[1]);
+  searchPer = atoi(argv[2]);
+  insertPer = searchPer + atoi(argv[3]);
+  removePer = insertPer + atoi(argv[4]);
+
+	runTime.tv_sec = atoi(argv[5]);
+	runTime.tv_nsec =0;
+	transientTime.tv_sec=0;
+	transientTime.tv_nsec=2000000;
+
+  range = (unsigned long) atol(argv[6])-1;
+	lseed = (unsigned long) atol(argv[7]);
+
+  tArgs = (struct tArgs**) malloc(numThreads * sizeof(struct tArgs*)); 
+
+  const gsl_rng_type* T;
+  gsl_rng* r;
+  gsl_rng_env_setup();
+  T = gsl_rng_default;
+  r = gsl_rng_alloc(T);
+  gsl_rng_set(r,lseed);
+	
+  
+  struct tArgs* initialInsertArgs = (struct tArgs*) malloc(sizeof(struct tArgs));
+  initialInsertArgs->successfulInserts=0;
+  initialInsertArgs->isNewNodeAvailable=false;
+	int i = 0;	
+  while(i < range/2) //populate the tree with 50% of keys
+  {
+    if (insertTree(gsl_rng_uniform_int(r,range) ))
+		i++;
+  }
+  pthread_t threadArray[numThreads];
+  for(int i=0;i<numThreads;i++)
+  {
+    tArgs[i] = (struct tArgs*) malloc(sizeof(struct tArgs));
+    tArgs[i]->tId = i;
+    tArgs[i]->lseed = gsl_rng_get(r);
+  }
+
+	for(int i=0;i<numThreads;i++)
+	{
+		pthread_create(&threadArray[i], NULL, operateOnTree, (void*) tArgs[i] );
+	}
+	
+	start=true; 										//start operations
+	//nanosleep(&transientTime,NULL); //warmup
+	sleep(.01);
+	steadyState=true;
+	nanosleep(&runTime,NULL);
+	stop=true;											//stop operations
+	
+	for(int i=0;i<numThreads;i++)
+	{
+		pthread_join(threadArray[i], NULL);
+	}	
+
+  unsigned long totalReadCount=0;
+  unsigned long totalSuccessfulReads=0;
+  unsigned long totalUnsuccessfulReads=0;
+  unsigned long totalReadRetries=0;
+  unsigned long totalInsertCount=0;
+  unsigned long totalSuccessfulInserts=0;
+  unsigned long totalUnsuccessfulInserts=0;
+  unsigned long totalInsertRetries=0;
+  unsigned long totalDeleteCount=0;
+  unsigned long totalSuccessfulDeletes=0;
+  unsigned long totalUnsuccessfulDeletes=0;
+  unsigned long totalDeleteRetries=0;
+	unsigned long totalSeekRetries=0;
+	unsigned long totalSeekLength=0;
+ 
+  for(int i=0;i<numThreads;i++)
+  {
+    totalReadCount += tArgs[i]->readCount;
+    totalSuccessfulReads += tArgs[i]->successfulReads;
+    totalUnsuccessfulReads += tArgs[i]->unsuccessfulReads;
+    totalReadRetries += tArgs[i]->readRetries;
+
+    totalInsertCount += tArgs[i]->insertCount;
+    totalSuccessfulInserts += tArgs[i]->successfulInserts;
+    totalUnsuccessfulInserts += tArgs[i]->unsuccessfulInserts;
+    totalInsertRetries += tArgs[i]->insertRetries;
+    totalDeleteCount += tArgs[i]->deleteCount;
+    totalSuccessfulDeletes += tArgs[i]->successfulDeletes;
+    totalUnsuccessfulDeletes += tArgs[i]->unsuccessfulDeletes;
+    totalDeleteRetries += tArgs[i]->deleteRetries;
+		totalSeekRetries += tArgs[i]->seekRetries;
+		totalSeekLength += tArgs[i]->seekLength;
+  }
+	unsigned long totalOperations = totalReadCount + totalInsertCount + totalDeleteCount;
+	double MOPS = totalOperations/(runTime.tv_sec*1000000.0);
+	printf("k%d;%d-%d-%d;%d;%ld;%ld;%ld;%ld;%ld;%ld;%ld;%.2f;%.2f\n",atoi(argv[6]),searchPer,(insertPer-searchPer),(removePer-insertPer),numThreads,totalReadCount,totalInsertCount,totalDeleteCount,totalReadRetries,totalSeekRetries,totalInsertRetries,totalDeleteRetries,totalSeekLength*1.0/totalOperations,MOPS);
+	(isValidTree(root));
+	pthread_exit(NULL);
 }
 
+/*
+int main(int argc, char **argv) {
+	struct option long_options[] = {
+		{"help", 				no_argument, 		NULL, 'h'},
+		{"duration",			required_argument,	NULL, 'D'},
+		{"Data Size",			required_argument,	NULL, 'I'},
+		{"thread-num",			required_argument,	NULL, 'T'},
+		{"range",				required_argument,	NULL, 'R'},
+		{"Seed",				required_argument,	NULL, 'S'},
+		{"Insert-Percentage",	required_argument,	NULL, 'i'},
+		{"Remove-Percentage",	required_argument,	NULL, 'r'},
+		{"Search-Percentage",	required_argument,	NULL, 's'}
+	};
+
+	thread_data_t *data;
+	pthread_t *threads;
+	struct timespec timeout;
+ 
+
+	while(1) {
+		int i = 0, c;
+		c = getopt_long(argc, argv, "hD:I:T:R:S:i:r:s:", long_options, &i);
+		if (c == -1)
+			break;
+		if (c ==0 && long_options[i].flag == 0)
+			c = long_options[i].val;
+
+		switch(c) {
+			case 0 :
+				break;
+			case 'h':
+				printf("Help Messge\n");
+				exit(0);
+			case 'D':
+				duration = atoi(optarg);
+				break;
+			case 'I':
+				dataSize = atoi(optarg);
+				initialSize = dataSize/2;
+				break;
+			case 'T':
+				numThreads = atoi(optarg);
+				break;
+			case 'R':
+				range = atoi(optarg);
+				break;
+			case 'S':
+				seed = atoi(optarg);
+				break;
+			case 'i':
+			 	insertPer = atoi(optarg);
+				break;
+			case 'r':
+				removePer = atoi(optarg);
+				break;
+			case 's':
+				searchPer = atoi(optarg);
+				break;
+			default:
+				std::cout<<"Use -h or --help for help"<<std::endl;
+				exit(1);
+		}
+	}
+	insertPer = searchPer + insertPer;
+	removePer = insertPer + removePer;
+	std::cout<<"Tree Type : Non-Blocking BST"<<std::endl;
+	std::cout<<"Duration : "<<duration<<std::endl;
+	std::cout<<"Data Size : "<<initialSize<<std::endl;
+	std::cout<<"Number of Threads : "<<numThreads<<std::endl;
+	std::cout<<"Range : "<<range<<std::endl;
+	std::cout<<"Seed : "<<seed<<std::endl;
+	std::cout<<"Insert percentage : "<<insertPer<<std::endl;
+	std::cout<<"Remove Percentage : "<<removePer<<std::endl;
+	std::cout<<"Search Percentage : "<<searchPer<<std::endl;
+
+    timeout.tv_sec = duration;
+	data = (thread_data_t *)malloc(numThreads * sizeof(thread_data_t));
+	threads = (pthread_t *)malloc(numThreads * sizeof(pthread_t));
+
+	if (seed == 0)
+		srand((int)time(0));
+	else
+		srand(seed);
+
+	std::cout<<"Pre Populating the tree with initial size of : "<<initialSize<<std::endl;
+	int i = 0;
+	const gsl_rng_type* T;
+  gsl_rng* r;
+  gsl_rng_env_setup();
+  T = gsl_rng_default;
+  r = gsl_rng_alloc(T);
+  gsl_rng_set(r,seed);
+	while(i < initialSize) {
+		int val = gsl_rng_uniform_int(r, range); 
+		if (insertTree(val)) {
+		}
+			i++;
+	}
+	
+	for (int i = 0; i <numThreads; i++) {
+		data[i].id = i;
+		data[i].seed = seed;
+		data[i].readCount = 0;
+		data[i].successfulReads = 0;
+		data[i].unSuccessfulReads = 0;
+		data[i].readRetries = 0;
+		data[i].insertCount = 0;
+		data[i].successfulInserts = 0;
+		data[i].unSuccessfulInserts = 0;
+		data[i].insertRetries = 0;
+		data[i].deleteCount = 0;
+		data[i].successfulDeletes = 0;
+		data[i].unSuccessfulDeletes = 0;
+		data[i].deleteRetries = 0;
+		data[i].seekRetries = 0;
+		// Here the if condition of creating the pthread will come
+		pthread_create(&threads[i], NULL, test, (void *)(&data[i]));
+	}
+
+	struct timespec transientTime;	
+	transientTime.tv_sec=0;
+	transientTime.tv_nsec=2000000;
+	std::cout<<"STARTING..."<<std::endl;
+	__atomic_store_n(&start, true, 0);
+	nanosleep(&transientTime, NULL);
+	__atomic_store_n(&steadyState, true, 0);
+	nanosleep(&timeout, NULL);
+	stop = true;
+	std::cout<<"STOPPING..."<<std::endl;
+	for (int i = 0; i < numThreads ; i++) {
+		if(pthread_join(threads[i], NULL) != 0) {
+			std::cout<<"Error waiting for thread joinig"<<std::endl;
+			exit(0);
+		}
+	}
+
+  unsigned long totalReadCount=0;
+  unsigned long totalSuccessfulReads=0;
+  unsigned long totalUnsuccessfulReads=0;
+  unsigned long totalReadRetries=0;
+  unsigned long totalInsertCount=0;
+  unsigned long totalSuccessfulInserts=0;
+  unsigned long totalUnsuccessfulInserts=0;
+  unsigned long totalInsertRetries=0;
+  unsigned long totalDeleteCount=0;
+  unsigned long totalSuccessfulDeletes=0;
+  unsigned long totalUnsuccessfulDeletes=0;
+  unsigned long totalDeleteRetries=0;
+	unsigned long totalSeekRetries=0;
+	unsigned long totalSeekLength=0;
+ 
+  for(int i=0;i<numThreads;i++)
+  {
+    totalReadCount += data[i].readCount;
+    totalSuccessfulReads += data[i].successfulReads;
+    totalUnsuccessfulReads += data[i].unSuccessfulReads;
+    totalReadRetries += data[i].readRetries;
+
+    totalInsertCount += data[i].insertCount;
+    totalSuccessfulInserts += data[i].successfulInserts;
+    totalUnsuccessfulInserts += data[i].unSuccessfulInserts;
+    totalInsertRetries += data[i].insertRetries;
+    totalDeleteCount += data[i].deleteCount;
+    totalSuccessfulDeletes += data[i].successfulDeletes;
+    totalUnsuccessfulDeletes += data[i].unSuccessfulDeletes;
+    totalDeleteRetries += data[i].deleteRetries;
+	totalSeekRetries += data[i].seekRetries;
+  }
+	unsigned long totalOperations = totalReadCount + totalInsertCount + totalDeleteCount;
+	// Here we need to add all the results and also update the methods
+	// to contain data[i], insertCounts and retries etc.
+	// This code is for synchrobench. Here it ends
+	isValidTree(root);
+	double MOPS = (totalOperations/(duration*1000000.0));
+	std::cout<<"Through Put is : "<<MOPS<<std::endl; 
+	//testbenchParallelRemove();
+	return 0;
+}
+ */
 
 
 
